@@ -67,6 +67,11 @@ export type Entry = z.infer<typeof entrySchema>;
 
 /**
  * Omitted and server-owned:
+ * - `bookId` — the entry's book is the `:bookId` in `POST /books/:bookId/entries`, which the server
+ *   has already resolved and authorized. A second copy in the body would be an independent claim
+ *   about which book is being written to, and the server would then have two answers to one
+ *   question — the "trusting `bookId` from the body on create" mistake in `nest-authz`. Omitted so
+ *   it cannot be sent at all.
  * - `createdBy` / `updatedBy` — derived from the authenticated session. Accepting them from the
  *   client would let a member attribute spending to someone else, which Insights then reports
  *   ([SCR-11] "WHO SPENT IT").
@@ -74,6 +79,7 @@ export type Entry = z.infer<typeof entrySchema>;
  */
 export const createEntryInputSchema = entrySchema.omit({
   id: true,
+  bookId: true,
   createdAt: true,
   updatedAt: true,
   createdBy: true,
@@ -83,8 +89,8 @@ export const createEntryInputSchema = entrySchema.omit({
 });
 export type CreateEntryInput = z.infer<typeof createEntryInputSchema>;
 
-/** `bookId` is omitted — moving an entry between books is not a designed operation. */
-export const updateEntryInputSchema = createEntryInputSchema.omit({ bookId: true }).partial();
+/** Same server-owned fields; moving an entry between books is not a designed operation either. */
+export const updateEntryInputSchema = createEntryInputSchema.partial();
 export type UpdateEntryInput = z.infer<typeof updateEntryInputSchema>;
 
 /**

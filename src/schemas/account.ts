@@ -1,6 +1,7 @@
 import { z } from 'zod';
+import { bookStatsSchema } from './book.js';
 import { objectId, timestampsSchema } from './common.js';
-import { roleSchema, rolePermissionsSchema } from './role.js';
+import { permissionsSchema, roleSchema, rolePermissionsSchema } from './role.js';
 
 export const accountKindSchema = z.enum(['SHARED', 'PERSONAL']);
 export type AccountKind = z.infer<typeof accountKindSchema>;
@@ -89,3 +90,55 @@ export const updateAccountInputSchema = accountBaseSchema
   .pick({ name: true, initial: true, permissions: true })
   .partial();
 export type UpdateAccountInput = z.infer<typeof updateAccountInputSchema>;
+
+/**
+ * A member as the account *list* renders them — name and role only.
+ *
+ * `contact` is deliberately absent. It is a member's phone number or email address, and the frozen
+ * design renders it on exactly one screen: `[SCR-08]`, which is the `manageMembers` screen. Sending
+ * it with the account list would hand every member's contact details to every other member,
+ * including a `TEEN`, to draw `[SCR-05]`'s overlapping avatars.
+ *
+ * `role` stays the full `roleSchema`, not `assignableRoleSchema` — every account has exactly one
+ * `OWNER` member, so the four assignable chips cannot represent a real `members[]`.
+ */
+export const accountMemberSummarySchema = accountMemberSchema.pick({
+  userId: true,
+  name: true,
+  role: true,
+});
+export type AccountMemberSummary = z.infer<typeof accountMemberSummarySchema>;
+
+/**
+ * `GET /accounts` — the account list behind `[SCR-04]` and the `[OVL-01]` switcher.
+ *
+ * Deliberately **not** `Account`. Two things are withheld and one is added:
+ *
+ * - **No `contact`** on members — see `accountMemberSummarySchema`.
+ * - **No `permissions` matrix.** Shipping it would force the client to find itself in `members[]`,
+ *   read its own role, index the matrix and special-case `OWNER` (which is absent from the matrix by
+ *   design) — that is the client re-deriving capabilities, which `nest-authz` forbids.
+ * - **`myCapabilities`** instead: the caller's own six capabilities, already resolved server-side
+ *   against `OWNER_PERMISSIONS` or the account's stored matrix. The UI gates on this and never
+ *   computes it.
+ */
+export const accountSummarySchema = accountBaseSchema
+  .pick({ id: true, name: true, kind: true, initial: true })
+  .extend({
+    members: z.array(accountMemberSummarySchema),
+    myCapabilities: permissionsSchema,
+    /**
+     * Derived per `[LOG-05]`'s "account totals = Σ bookStats over books where book.acct === acctId",
+     * for `[SCR-04]`'s right-aligned balance and `[OVL-01]`'s per-account figure. Never stored.
+     *
+     * **Nullable, and null means "not permitted to see it"** rather than "no books". `GET /accounts`
+     * is the one route with no capability gate — a member must be able to find the accounts they
+     * belong to even when an admin has switched `View entries` off their role on `[SCR-08]` — so a
+     * balance, which is entry-derived, cannot be unconditional here. Null rather than an absent key
+     * so the two states stay distinguishable in the type.
+     */
+    stats: bookStatsSchema.nullable(),
+    /** Book count for `[SCR-04]`'s meta line and `[OVL-01]`'s `{KIND} · {n} BOOKS`. Not entry-derived, so never withheld. */
+    bookCount: z.number().int().nonnegative(),
+  });
+export type AccountSummary = z.infer<typeof accountSummarySchema>;

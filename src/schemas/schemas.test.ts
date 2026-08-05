@@ -6,7 +6,7 @@ import {
   moneyAmount,
   timeOfDayString,
 } from './common.js';
-import { accountSchema, createAccountInputSchema } from './account.js';
+import { accountSchema, accountSummarySchema, createAccountInputSchema } from './account.js';
 import { bookSchema, createBookInputSchema, customFieldTypeSchema } from './book.js';
 import { createEntryInputSchema, entrySchema, updateEntryInputSchema } from './entry.js';
 import { createDueInputSchema, dueSchema } from './due.js';
@@ -150,6 +150,15 @@ describe('createEntryInputSchema', () => {
   it('does not accept a client-supplied createdBy', () => {
     const parsed = createEntryInputSchema.parse({ ...validEntry, createdBy: OID });
     expect(parsed).not.toHaveProperty('createdBy');
+  });
+
+  it('does not accept a client-supplied bookId', () => {
+    // The book is the `:bookId` the server already resolved and authorized. A body copy would be a
+    // second, independent claim about which book is being written to — `nest-authz`'s "trusting
+    // bookId from the body on create". zod strips unknown keys, so this asserts the *result*.
+    const parsed = createEntryInputSchema.parse(validEntry);
+    expect(parsed).not.toHaveProperty('bookId');
+    expect(updateEntryInputSchema.parse({ bookId: OID })).not.toHaveProperty('bookId');
   });
 
   it('does not accept a client-supplied date or time', () => {
@@ -374,5 +383,71 @@ describe('permissions', () => {
     expect(ROLE_PERMISSION_SEED.TEEN.addEntries).toBe(true);
     expect(ROLE_PERMISSION_SEED.TEEN.editAnyEntry).toBe(false);
     expect(ROLE_PERMISSION_SEED.VIEWER.addEntries).toBe(false);
+  });
+});
+
+describe('accountSummarySchema', () => {
+  const summary = {
+    id: OID,
+    name: 'Sharma Family',
+    kind: 'SHARED' as const,
+    initial: 'S',
+    members: [{ userId: OID, name: 'Ananya Sharma', role: 'OWNER' as const }],
+    myCapabilities: OWNER_PERMISSIONS,
+    stats: { cin: 120000, cout: 37480, bal: 82520 },
+    bookCount: 3,
+  };
+
+  it('accepts the account-list shape', () => {
+    expect(accountSummarySchema.safeParse(summary).success).toBe(true);
+  });
+
+  it('withholds every member contact', () => {
+    // A member's phone or email renders on [SCR-08] alone — the manageMembers screen. The account
+    // list must not carry it, or drawing [SCR-05]'s avatars hands a TEEN everyone's contact details.
+    const parsed = accountSummarySchema.parse({
+      ...summary,
+      members: [{ ...summary.members[0], contact: 'ananya@gmail.com' }],
+    });
+    expect(parsed.members[0]).not.toHaveProperty('contact');
+  });
+
+  it('withholds the editable permissions matrix and carries resolved capabilities instead', () => {
+    // nest-authz: the client mirrors the server's answer, it never re-derives it from the matrix.
+    const parsed = accountSummarySchema.parse({
+      ...summary,
+      permissions: ROLE_PERMISSION_SEED,
+    });
+    expect(parsed).not.toHaveProperty('permissions');
+    expect(permissionsSchema.safeParse(parsed.myCapabilities).success).toBe(true);
+  });
+
+  it('represents an OWNER member, which the four assignable chips cannot', () => {
+    // Every account has exactly one OWNER, so the member projection needs the full role enum.
+    expect(assignableRoleSchema.safeParse('OWNER').success).toBe(false);
+    expect(accountSummarySchema.safeParse(summary).success).toBe(true);
+  });
+
+  it('distinguishes "not allowed to see a balance" from "no books"', () => {
+    // stats is null exactly when the caller lacks viewEntries. GET /accounts has no capability
+    // gate — you must find the accounts you belong to regardless — so the balance is gated here.
+    const withheld = accountSummarySchema.parse({ ...summary, stats: null });
+    expect(withheld.stats).toBeNull();
+    expect(withheld.bookCount).toBe(3);
+
+    const empty = accountSummarySchema.parse({
+      ...summary,
+      stats: { cin: 0, cout: 0, bal: 0 },
+      bookCount: 0,
+    });
+    expect(empty.stats).not.toBeNull();
+  });
+
+  it('requires stats to be present-or-null, never absent', () => {
+    // An absent key would collapse "withheld" back into "missing", which is what null exists to
+    // keep apart — the same reasoning as `nextCursor` in http.ts.
+    const withoutStats: Record<string, unknown> = { ...summary };
+    delete withoutStats.stats;
+    expect(accountSummarySchema.safeParse(withoutStats).success).toBe(false);
   });
 });
