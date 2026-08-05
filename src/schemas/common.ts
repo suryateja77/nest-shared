@@ -74,6 +74,20 @@ export const localDateTimeString = z
   );
 
 /**
+ * The largest a **single entered amount** may be: ₹1,00,00,000.
+ *
+ * A ceiling has to exist, and not for tidiness. Derived totals are re-validated on the way out
+ * (`bookStatsSchema`), and zod's `.int()` rejects anything past `Number.MAX_SAFE_INTEGER` — so
+ * without a bound here one member with `addEntries` could post `MAX_SAFE_INTEGER`, push a book's
+ * summed `cin` out of the safe-integer range, and make `[SCR-04]`, `[SCR-05]` and `[SCR-06]` fail
+ * serialization for **every** member of the account, with no edit or delete route to undo it.
+ *
+ * ₹1 crore because it is inside what the frozen design can render — `[LOG-06]`'s `compact()` gives
+ * "1 Cr" and `words()` "1 CRORE" — while still covering a legitimately large one-off for a family.
+ */
+export const MAX_ENTRY_AMOUNT = 10_000_000;
+
+/**
  * A money amount in **whole rupees**, never negative — direction is a separate field (`Entry.type`,
  * `Due.direction`).
  *
@@ -81,11 +95,38 @@ export const localDateTimeString = z
  * reads "RUPEES 12,340", `compact()` tops out at "1.25 Cr", and every seeded amount in the
  * prototype is whole ([LOG-06], [DS-6]). Integers also keep `bal = opening + cin − cout` exact over
  * a long ledger, which float rupees would not.
+ *
+ * **For a value a person enters** — an entry's amount, a due's amount, a book's opening balance.
+ * Sums of these are `moneyTotal`, which is bounded far more loosely on purpose.
  */
-export const moneyAmount = z.number().int('Amounts are whole rupees').nonnegative();
+export const moneyAmount = z
+  .number()
+  .int('Amounts are whole rupees')
+  .nonnegative()
+  .max(MAX_ENTRY_AMOUNT, 'That is larger than a single entry may be');
 
-/** A signed money amount, for values that may legitimately go below zero (a book's opening balance). */
-export const signedMoneyAmount = z.number().int('Amounts are whole rupees');
+/** A signed entered amount, for values that may legitimately go below zero (a book's opening balance). */
+export const signedMoneyAmount = z
+  .number()
+  .int('Amounts are whole rupees')
+  .min(-MAX_ENTRY_AMOUNT, 'That is larger than a single entry may be')
+  .max(MAX_ENTRY_AMOUNT, 'That is larger than a single entry may be');
+
+/**
+ * A **derived total** — `cin`, `cout`, `bal`, `monthNet`, dues totals ([LOG-05]).
+ *
+ * Deliberately not bounded by `MAX_ENTRY_AMOUNT`: these are sums over an entire ledger, and a
+ * household book passes ₹1 crore of lifetime cash-in without anything unusual happening. Applying
+ * the single-entry ceiling here would reject a perfectly ordinary book.
+ *
+ * The only bound is `.int()`'s safe-integer range, which with entries capped at ₹1 crore needs
+ * something on the order of 10^9 entries in one book to reach — unreachable rather than one
+ * request away, which is the whole point of the entry cap.
+ */
+export const moneyTotal = z.number().int('Amounts are whole rupees').nonnegative();
+
+/** A signed derived total — a balance may legitimately be negative. */
+export const signedMoneyTotal = z.number().int('Amounts are whole rupees');
 
 export const timestampsSchema = z.object({
   createdAt: isoDateString,

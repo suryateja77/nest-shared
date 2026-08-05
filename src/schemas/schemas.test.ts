@@ -3,11 +3,20 @@ import {
   dateOnlyString,
   isoDateString,
   localDateTimeString,
+  MAX_ENTRY_AMOUNT,
   moneyAmount,
+  moneyTotal,
+  signedMoneyAmount,
+  signedMoneyTotal,
   timeOfDayString,
 } from './common.js';
 import { accountSchema, accountSummarySchema, createAccountInputSchema } from './account.js';
-import { bookSchema, createBookInputSchema, customFieldTypeSchema } from './book.js';
+import {
+  bookSchema,
+  bookStatsSchema,
+  createBookInputSchema,
+  customFieldTypeSchema,
+} from './book.js';
 import { createEntryInputSchema, entrySchema, updateEntryInputSchema } from './entry.js';
 import { createDueInputSchema, dueSchema } from './due.js';
 import {
@@ -58,6 +67,31 @@ describe('moneyAmount', () => {
     expect(moneyAmount.safeParse(0).success).toBe(true);
     expect(moneyAmount.safeParse(24.5).success).toBe(false);
     expect(moneyAmount.safeParse(-100).success).toBe(false);
+  });
+
+  it('caps a single entered amount at MAX_ENTRY_AMOUNT', () => {
+    // Without a ceiling, one entry of MAX_SAFE_INTEGER pushes a book's summed `cin` out of the
+    // safe-integer range, and bookStatsSchema then rejects it during response serialization — every
+    // balance screen 500s for every member of the account, with no delete route to undo it.
+    expect(moneyAmount.safeParse(MAX_ENTRY_AMOUNT).success).toBe(true);
+    expect(moneyAmount.safeParse(MAX_ENTRY_AMOUNT + 1).success).toBe(false);
+    expect(moneyAmount.safeParse(Number.MAX_SAFE_INTEGER).success).toBe(false);
+    expect(signedMoneyAmount.safeParse(-MAX_ENTRY_AMOUNT - 1).success).toBe(false);
+  });
+
+  it('does not apply the single-entry ceiling to a derived total', () => {
+    // cin/cout/bal are sums over a whole ledger. A household book passes ₹1 crore of lifetime
+    // cash-in without anything unusual happening, so capping totals would reject an ordinary book.
+    expect(moneyTotal.safeParse(MAX_ENTRY_AMOUNT * 5000).success).toBe(true);
+    expect(signedMoneyTotal.safeParse(-MAX_ENTRY_AMOUNT * 5000).success).toBe(true);
+    expect(
+      bookStatsSchema.safeParse({ cin: 9_00_00_00_000, cout: 0, bal: 9_00_00_00_000 }).success,
+    ).toBe(true);
+  });
+
+  it('still refuses a total that has left the safe-integer range', () => {
+    // The backstop the entry cap makes unreachable rather than one request away.
+    expect(moneyTotal.safeParse(Number.MAX_SAFE_INTEGER + 2).success).toBe(false);
   });
 });
 

@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import {
   monthString,
-  moneyAmount,
+  moneyTotal,
   objectId,
   signedMoneyAmount,
+  signedMoneyTotal,
   timestampsSchema,
 } from './common.js';
 
@@ -84,10 +85,11 @@ export type UpdateBookInput = z.infer<typeof updateBookInputSchema>;
  * computes it per request.
  */
 export const bookStatsSchema = z.object({
-  cin: moneyAmount,
-  cout: moneyAmount,
+  /** Totals, not entered amounts — `moneyTotal`, so a long-running book is not rejected by the single-entry ceiling. */
+  cin: moneyTotal,
+  cout: moneyTotal,
   /** `opening + cin − cout`. Signed — a book may legitimately be in the red. */
-  bal: signedMoneyAmount,
+  bal: signedMoneyTotal,
 });
 export type BookStats = z.infer<typeof bookStatsSchema>;
 
@@ -101,8 +103,8 @@ export type BookStats = z.infer<typeof bookStatsSchema>;
 export const bookSummarySchema = bookSchema.extend({
   stats: bookStatsSchema,
   entryCount: z.number().int().nonnegative(),
-  /** `cin − cout` restricted to `month`. Signed. */
-  monthNet: signedMoneyAmount,
+  /** `cin − cout` restricted to `month`. Signed, and a total rather than an entered amount. */
+  monthNet: signedMoneyTotal,
   /** Echoed back so a client cannot misattribute a delta to the wrong month. */
   month: monthString,
 });

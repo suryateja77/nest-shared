@@ -79,14 +79,14 @@ export type RolePermissions = z.infer<typeof rolePermissionsSchema>;
  * capabilities therefore reads this constant for `OWNER` and the account's stored matrix for
  * everyone else.
  */
-export const OWNER_PERMISSIONS: Permissions = {
+export const OWNER_PERMISSIONS: Permissions = Object.freeze({
   viewEntries: true,
   addEntries: true,
   editAnyEntry: true,
   deleteEntries: true,
   manageMembers: true,
   bookSettings: true,
-};
+});
 
 /** The seed matrix from [LOG-01]. The starting point for a new account, not a constant. */
 export const ROLE_PERMISSION_SEED: Record<AssignableRole, Permissions> = {

@@ -1,6 +1,6 @@
 {
   "name": "nest-shared",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Shared TypeScript types and zod schemas for the Nest family expense app (consumed by nest-ui and nest-data-service)",
   "license": "Apache-2.0",
   "type": "module",

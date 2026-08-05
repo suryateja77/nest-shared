@@ -59,7 +59,13 @@ export const entrySchema = z
      * or index cannot be written in place of an id. `string` for a text field, `boolean` for a
      * toggle ([LOG-01]).
      */
-    customValues: z.record(objectId, z.union([z.string(), z.boolean()])).optional(),
+    /**
+     * The text bound matches `remark`'s 200. Without one the only ceiling is the 1 MB body limit,
+     * and a ledger page of 100 such entries becomes a ~100 MB response every member of the account
+     * pays for on `[SCR-06]`. `[OVL-08]` renders a text custom field as a single-line input, so
+     * nothing the design can produce comes close.
+     */
+    customValues: z.record(objectId, z.union([z.string().max(200), z.boolean()])).optional(),
     attachment: attachmentSchema.optional(),
   })
   .merge(timestampsSchema);
