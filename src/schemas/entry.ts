@@ -1,0 +1,87 @@
+import { z } from 'zod';
+import {
+  dateOnlyString,
+  moneyAmount,
+  objectId,
+  timeOfDayString,
+  timestampsSchema,
+} from './common.js';
+
+export const entryTypeSchema = z.enum(['in', 'out']);
+export type EntryType = z.infer<typeof entryTypeSchema>;
+
+/**
+ * [GAP-4] — real upload is unbuilt. `name` and `mimeType` are **client-supplied and untrusted**:
+ * the server must sniff the actual bytes against an allowlist (image + PDF per [REQ-5]) and
+ * generate the object key itself. Never interpolate `name` into a storage path.
+ */
+export const attachmentSchema = z.object({
+  url: z.url(),
+  name: z.string().min(1),
+  sizeBytes: z.number().int().nonnegative(),
+  mimeType: z.string().min(1),
+});
+export type Attachment = z.infer<typeof attachmentSchema>;
+
+export const entrySchema = z
+  .object({
+    id: objectId,
+    bookId: objectId,
+    type: entryTypeSchema,
+    amount: moneyAmount,
+    /** [OVL-08]'s REMARK field — `desc` in the prototype. */
+    remark: z.string().max(200).optional(),
+    /** Absent when the book has `useCategory` / `useMode` off ([SCR-07]). */
+    category: z.string().optional(),
+    paymentMode: z.string().optional(),
+    /**
+     * The ledger's grouping key ([SCR-06]).
+     *
+     * **Server-assigned at creation and never editable.** [OVL-08] has no date picker — its record
+     * line is display-only — the prototype stamps `d`/`t` with the current clock and explicitly
+     * preserves both across an edit, and Munim's `chatCreateEntry` takes no date either. Stored
+     * separately from `createdAt` because grouping is a local-calendar operation, not an instant.
+     */
+    date: dateOnlyString,
+    /** 24-hour `HH:mm`. `9:41 PM` is display formatting ([LOG-06] timeTok), not storage. */
+    time: timeOfDayString,
+    /**
+     * `who` in [LOG-01] — who created the entry. Metadata, not a user-entered field: it is shown on
+     * [OVL-08]'s record line, drives Insights' "WHO SPENT IT" ([SCR-11]), and the prototype
+     * preserves it across edits. Server-assigned from the session, never accepted from the client.
+     */
+    createdBy: objectId,
+    /** Set when the entry is edited — the prototype's `editedBy`. */
+    updatedBy: objectId.optional(),
+    /**
+     * Values keyed by the book's `customFields[].id` — the key type is enforced, so a stray label
+     * or index cannot be written in place of an id. `string` for a text field, `boolean` for a
+     * toggle ([LOG-01]).
+     */
+    customValues: z.record(objectId, z.union([z.string(), z.boolean()])).optional(),
+    attachment: attachmentSchema.optional(),
+  })
+  .merge(timestampsSchema);
+export type Entry = z.infer<typeof entrySchema>;
+
+/**
+ * Omitted and server-owned:
+ * - `createdBy` / `updatedBy` — derived from the authenticated session. Accepting them from the
+ *   client would let a member attribute spending to someone else, which Insights then reports
+ *   ([SCR-11] "WHO SPENT IT").
+ * - `date` / `time` — stamped from the clock. [OVL-08] offers no way to set them.
+ */
+export const createEntryInputSchema = entrySchema.omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  createdBy: true,
+  updatedBy: true,
+  date: true,
+  time: true,
+});
+export type CreateEntryInput = z.infer<typeof createEntryInputSchema>;
+
+/** `bookId` is omitted — moving an entry between books is not a designed operation. */
+export const updateEntryInputSchema = createEntryInputSchema.omit({ bookId: true }).partial();
+export type UpdateEntryInput = z.infer<typeof updateEntryInputSchema>;
