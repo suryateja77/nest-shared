@@ -1,4 +1,5 @@
 export * from './schemas/common.js';
+export * from './schemas/http.js';
 export * from './schemas/role.js';
 export * from './schemas/account.js';
 export * from './schemas/book.js';

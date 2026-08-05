@@ -42,6 +42,15 @@ export const dateOnlyString = z
     );
   }, 'Not a real calendar date');
 
+/**
+ * Calendar month, `YYYY-MM`.
+ *
+ * Month-scoped figures are requested by the client rather than inferred by the server: "this month"
+ * is a local-calendar fact, and no account or user timezone is defined yet (see [GAP-5]). Having
+ * the client name the month removes the guess instead of hiding it.
+ */
+export const monthString = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Expected YYYY-MM');
+
 /** Time of day, 24-hour `HH:mm`. `9:41 PM` is a display format ([LOG-06] timeTok), never storage. */
 export const timeOfDayString = z
   .string()

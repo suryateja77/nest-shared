@@ -6,6 +6,7 @@ import {
   timeOfDayString,
   timestampsSchema,
 } from './common.js';
+import { paginated, paginationQuerySchema } from './http.js';
 
 export const entryTypeSchema = z.enum(['in', 'out']);
 export type EntryType = z.infer<typeof entryTypeSchema>;
@@ -85,3 +86,20 @@ export type CreateEntryInput = z.infer<typeof createEntryInputSchema>;
 /** `bookId` is omitted — moving an entry between books is not a designed operation. */
 export const updateEntryInputSchema = createEntryInputSchema.omit({ bookId: true }).partial();
 export type UpdateEntryInput = z.infer<typeof updateEntryInputSchema>;
+
+/**
+ * `GET /books/:bookId/entries` — the ledger ([SCR-06]).
+ *
+ * Ordered `date desc, time desc, id desc`, newest first, which is both what the screen renders and
+ * what makes the running balance computable client-side: any row's balance is the book balance
+ * minus everything newer, and everything newer is already loaded by the time you have scrolled to
+ * it ([LOG-05]).
+ *
+ * Filters ([OVL-04]) are not part of this contract yet — they are excluded from the first slice.
+ */
+export const entriesQuerySchema = paginationQuerySchema;
+export type EntriesQuery = z.infer<typeof entriesQuerySchema>;
+
+/** `{ items, nextCursor }` of entries. */
+export const entriesPageSchema = paginated(entrySchema);
+export type EntriesPage = z.infer<typeof entriesPageSchema>;

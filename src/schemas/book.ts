@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { objectId, signedMoneyAmount, timestampsSchema } from './common.js';
+import {
+  monthString,
+  moneyAmount,
+  objectId,
+  signedMoneyAmount,
+  timestampsSchema,
+} from './common.js';
 
 /**
  * [LOG-01]: `CustomField { name, type: 'text'|'toggle', placeholder? }`. [OVL-08] renders each as
@@ -69,3 +75,44 @@ export type CreateBookInput = z.infer<typeof createBookInputSchema>;
  */
 export const updateBookInputSchema = createBookInputSchema.omit({ accountId: true }).partial();
 export type UpdateBookInput = z.infer<typeof updateBookInputSchema>;
+
+/**
+ * Derived totals for a book ([LOG-05]). **Never stored** — recomputed from entries on every read.
+ *
+ * "Never store derived" is not "never transmit derived": [SCR-05] renders a balance on every book
+ * row, and a client cannot compute that without fetching every entry of every book. The server
+ * computes it per request.
+ */
+export const bookStatsSchema = z.object({
+  cin: moneyAmount,
+  cout: moneyAmount,
+  /** `opening + cin − cout`. Signed — a book may legitimately be in the red. */
+  bal: signedMoneyAmount,
+});
+export type BookStats = z.infer<typeof bookStatsSchema>;
+
+/**
+ * A book as [SCR-05]'s list row and [SCR-06]'s ledger header need it.
+ *
+ * `monthNet` is the row's "+₹82,520 THIS MO." delta — **scoped to `month`**, which the client
+ * supplies. The prototype computes that figure over *all* entries while labelling it "THIS MO.";
+ * its fixture is a single month so the discrepancy never shows. The label is authoritative.
+ */
+export const bookSummarySchema = bookSchema.extend({
+  stats: bookStatsSchema,
+  entryCount: z.number().int().nonnegative(),
+  /** `cin − cout` restricted to `month`. Signed. */
+  monthNet: signedMoneyAmount,
+  /** Echoed back so a client cannot misattribute a delta to the wrong month. */
+  month: monthString,
+});
+export type BookSummary = z.infer<typeof bookSummarySchema>;
+
+/**
+ * `GET /accounts/:accountId/books`.
+ *
+ * `month` is **required**: the server has no defensible default without a timezone, and silently
+ * picking one would make a visible money figure wrong in a way nobody could see.
+ */
+export const booksQuerySchema = z.object({ month: monthString });
+export type BooksQuery = z.infer<typeof booksQuerySchema>;
