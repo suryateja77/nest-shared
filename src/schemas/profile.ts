@@ -29,12 +29,17 @@ export const profileSchema = z
 export type Profile = z.infer<typeof profileSchema>;
 
 /**
- * [SCR-12b] edits exactly the four detail rows plus the photo.
+ * `PATCH /profile` — the two [SCR-12b] fields that carry no other invariant and can be written
+ * directly.
  *
- * Changing `email` or `phone` changes a sign-in identifier, so the server must verify the new one
- * by OTP before it takes effect — it cannot simply be written from this payload.
+ * Deliberately narrower than `profileSchema` itself: `email` and `phone` are sign-in identifiers,
+ * so a payload that included them would let a route compile against a shape it must never actually
+ * write from — the server has to verify a new identifier by OTP before it takes effect (see
+ * `changeIdentifier*` below). `avatarUrl` is a photo upload, out of scope for this feature and with
+ * no route to write it yet ([OVL-03]). Keeping both off this type, rather than trusting a handler
+ * to ignore them, is what makes "written from this payload" impossible instead of merely unwise.
  */
-export const updateProfileInputSchema = profileSchema
-  .pick({ name: true, username: true, email: true, phone: true, avatarUrl: true })
+export const updateProfileDetailsInputSchema = profileSchema
+  .pick({ name: true, username: true })
   .partial();
-export type UpdateProfileInput = z.infer<typeof updateProfileInputSchema>;
+export type UpdateProfileDetailsInput = z.infer<typeof updateProfileDetailsInputSchema>;
