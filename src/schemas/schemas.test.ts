@@ -36,6 +36,7 @@ import {
   rolePermissionsSchema,
 } from './role.js';
 import { createInviteInputSchema } from './invite.js';
+import { sendOtpInputSchema, verifyOtpInputSchema } from './auth.js';
 
 const OID = '507f1f77bcf86cd799439011';
 
@@ -491,5 +492,47 @@ describe('accountSummarySchema', () => {
     const withoutStats: Record<string, unknown> = { ...summary };
     delete withoutStats.stats;
     expect(accountSummarySchema.safeParse(withoutStats).success).toBe(false);
+  });
+});
+
+describe('sendOtpInputSchema / verifyOtpInputSchema', () => {
+  it('accepts a 10-digit phone identifier and rejects other shapes', () => {
+    expect(
+      sendOtpInputSchema.safeParse({ channel: 'phone', identifier: '9999999999' }).success,
+    ).toBe(true);
+    expect(sendOtpInputSchema.safeParse({ channel: 'phone', identifier: '99999' }).success).toBe(
+      false,
+    );
+    // [SCR-02]'s +91 prefix is a fixed display decoration, never typed — the payload is digits only.
+    expect(
+      sendOtpInputSchema.safeParse({ channel: 'phone', identifier: '+919999999999' }).success,
+    ).toBe(false);
+  });
+
+  it('accepts a well-formed email identifier and rejects a malformed one', () => {
+    expect(
+      sendOtpInputSchema.safeParse({ channel: 'email', identifier: '9999999999@nest.com' }).success,
+    ).toBe(true);
+    expect(
+      sendOtpInputSchema.safeParse({ channel: 'email', identifier: 'not-an-email' }).success,
+    ).toBe(false);
+  });
+
+  it('ties the identifier shape to its own channel, never the other', () => {
+    // A phone-shaped value under 'email' (or vice versa) must fail — [SCR-02] never lets them mix.
+    expect(
+      sendOtpInputSchema.safeParse({ channel: 'email', identifier: '9999999999' }).success,
+    ).toBe(false);
+    expect(
+      sendOtpInputSchema.safeParse({ channel: 'phone', identifier: '9999999999@nest.com' }).success,
+    ).toBe(false);
+  });
+
+  it('requires exactly 4 digits for the code, matching [SCR-03]', () => {
+    const base = { channel: 'phone' as const, identifier: '9999999999' };
+    expect(verifyOtpInputSchema.safeParse({ ...base, code: '9999' }).success).toBe(true);
+    expect(verifyOtpInputSchema.safeParse({ ...base, code: '999' }).success).toBe(false);
+    expect(verifyOtpInputSchema.safeParse({ ...base, code: '99999' }).success).toBe(false);
+    expect(verifyOtpInputSchema.safeParse({ ...base, code: 'abcd' }).success).toBe(false);
   });
 });

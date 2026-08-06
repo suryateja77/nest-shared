@@ -8,3 +8,4 @@ export * from './schemas/due.js';
 export * from './schemas/reminder.js';
 export * from './schemas/invite.js';
 export * from './schemas/profile.js';
+export * from './schemas/auth.js';
