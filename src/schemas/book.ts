@@ -62,19 +62,27 @@ export const bookSchema = z
   .merge(timestampsSchema);
 export type Book = z.infer<typeof bookSchema>;
 
+/**
+ * `accountId` is omitted and server-owned: the book's account is the `:accountId` in
+ * `POST /accounts/:accountId/books`, which the server has already resolved and authorized. A copy
+ * in the body would be a second, independent claim about which account is being written to — the
+ * "trusting `accountId` from the body on create" mistake in `nest-authz`, and the same shape as the
+ * one `createEntryInputSchema` carried for `bookId`.
+ */
 export const createBookInputSchema = bookSchema.omit({
   id: true,
+  accountId: true,
   createdAt: true,
   updatedAt: true,
 });
 export type CreateBookInput = z.infer<typeof createBookInputSchema>;
 
 /**
- * `accountId` is omitted: moving a book between accounts ([REQ-4]) is a separate operation that
- * needs `bookSettings` on **both** the source and the destination account, so it must not be
- * reachable through a general update.
+ * Same omission, for a second reason: moving a book between accounts ([REQ-4]) needs `bookSettings`
+ * on **both** the source and the destination account, so it must not be reachable through a general
+ * update either.
  */
-export const updateBookInputSchema = createBookInputSchema.omit({ accountId: true }).partial();
+export const updateBookInputSchema = createBookInputSchema.partial();
 export type UpdateBookInput = z.infer<typeof updateBookInputSchema>;
 
 /**

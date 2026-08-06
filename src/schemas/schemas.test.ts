@@ -16,6 +16,7 @@ import {
   bookStatsSchema,
   createBookInputSchema,
   customFieldTypeSchema,
+  updateBookInputSchema,
 } from './book.js';
 import { createEntryInputSchema, entrySchema, updateEntryInputSchema } from './entry.js';
 import { createDueInputSchema, dueSchema } from './due.js';
@@ -97,7 +98,6 @@ describe('moneyAmount', () => {
 
 describe('createBookInputSchema', () => {
   const validBook = {
-    accountId: OID,
     name: 'Household',
     sub: 'Runs since Jan 2026',
     tint: '#B4472C',
@@ -112,6 +112,14 @@ describe('createBookInputSchema', () => {
 
   it('accepts a valid book payload', () => {
     expect(createBookInputSchema.safeParse(validBook).success).toBe(true);
+  });
+
+  it('does not accept a client-supplied accountId', () => {
+    // The account is the `:accountId` the server already resolved and authorized. A body copy is a
+    // second, independent claim — the same defect createEntryInputSchema carried for bookId.
+    const parsed = createBookInputSchema.parse({ ...validBook, accountId: OID });
+    expect(parsed).not.toHaveProperty('accountId');
+    expect(updateBookInputSchema.parse({ accountId: OID })).not.toHaveProperty('accountId');
   });
 
   it('rejects a non-hex tint', () => {
