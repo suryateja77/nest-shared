@@ -427,8 +427,9 @@ describe('permissions', () => {
   it('trims the account name so a whitespace-only one cannot be created', () => {
     // [OVL-17]'s delete confirm unlocks on dangerText.trim() === account.name.trim(). A name of
     // spaces would make an empty input satisfy the gate that exists to slow a deletion down.
-    expect(createAccountInputSchema.safeParse({ name: '   ', kind: 'SHARED', initial: 'S' }).success)
-      .toBe(false);
+    expect(
+      createAccountInputSchema.safeParse({ name: '   ', kind: 'SHARED', initial: 'S' }).success,
+    ).toBe(false);
 
     const parsed = createAccountInputSchema.parse({
       name: '  PG Rent  ',
@@ -516,7 +517,9 @@ describe('accountSummarySchema', () => {
     // Without this field the client cannot tell the two apart.
     const parsed = accountSummarySchema.parse(summary);
     expect(parsed.createdBy).toBe(OID);
-    expect(accountSummarySchema.safeParse({ ...summary, createdBy: undefined }).success).toBe(false);
+    expect(accountSummarySchema.safeParse({ ...summary, createdBy: undefined }).success).toBe(
+      false,
+    );
   });
 
   it('distinguishes "not allowed to see a balance" from "no books"', () => {
