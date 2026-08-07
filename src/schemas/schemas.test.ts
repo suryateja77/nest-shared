@@ -28,9 +28,7 @@ import {
 } from './reminder.js';
 import {
   CAPABILITY_ORDER,
-  OWNER_PERMISSIONS,
   ROLE_PERMISSION_SEED,
-  assignableRoleSchema,
   permissionsSchema,
   roleSchema,
   rolePermissionsSchema,
@@ -358,24 +356,25 @@ describe('permissions', () => {
     expect(rolePermissionsSchema.safeParse(partial).success).toBe(false);
   });
 
-  it('keys the editable matrix on the four chips [SCR-08] renders', () => {
-    expect(assignableRoleSchema.options).toEqual(['ADMIN', 'EDITOR', 'VIEWER', 'TEEN']);
+  it('keys the matrix on the four chips [SCR-08] renders, which is every role there is', () => {
+    // Ownership is `Account.createdBy`, not a role ([LOG-01] glossary), so no role sits outside
+    // the matrix and there is no second "assignable" enum to keep in step with this one.
+    expect(roleSchema.options).toEqual(['ADMIN', 'EDITOR', 'VIEWER', 'TEEN']);
     expect(rolePermissionsSchema.safeParse(ROLE_PERMISSION_SEED).success).toBe(true);
   });
 
-  it('gives OWNER the same six capabilities as the seeded ADMIN', () => {
-    expect(roleSchema.options).toContain('OWNER');
-    expect(OWNER_PERMISSIONS).toEqual(ROLE_PERMISSION_SEED.ADMIN);
+  it('has no OWNER role', () => {
+    // The revised [LOG-01] gives Member.role as ADMIN|EDITOR|VIEWER|TEEN and the handoff glossary
+    // is explicit that owner "is not a role in CAPS". A stored member cannot hold one.
+    expect(roleSchema.safeParse('OWNER').success).toBe(false);
   });
 
-  it('keeps OWNER out of the editable matrix so its rights cannot be stripped', () => {
-    const withOwner = { ...ROLE_PERMISSION_SEED, OWNER: OWNER_PERMISSIONS };
-    expect(rolePermissionsSchema.safeParse(withOwner).success).toBe(false);
-  });
-
-  describe('exactly one OWNER', () => {
-    const member = (role: string) => ({
-      userId: OID,
+  describe('the creator is always a member', () => {
+    const CREATOR = OID;
+    /** Must differ from `OID` — a same-value "other" member silently satisfies the refinement. */
+    const OTHER = '507f1f77bcf86cd799439012';
+    const member = (userId: string, role: string) => ({
+      userId,
       name: 'Ananya Sharma',
       contact: 'ananya@gmail.com',
       role,
@@ -385,46 +384,55 @@ describe('permissions', () => {
       name: 'Sharma Family',
       kind: 'SHARED',
       initial: 'S',
+      createdBy: CREATOR,
       permissions: ROLE_PERMISSION_SEED,
       createdAt: '2026-08-05T00:00:00.000Z',
       updatedAt: '2026-08-05T00:00:00.000Z',
     };
 
-    it('accepts an account with one owner alongside other roles', () => {
-      const members = [member('OWNER'), member('ADMIN'), member('VIEWER')];
+    it('accepts an account whose creator is among its members', () => {
+      const members = [member(CREATOR, 'ADMIN'), member(OTHER, 'VIEWER')];
       expect(accountSchema.safeParse({ ...base, members }).success).toBe(true);
     });
 
-    it('rejects an account with no owner', () => {
-      // Deliberately rejects the prototype's shared-account fixture (two ADMINs, no owner):
-      // without an owner, toggling Manage members off the ADMIN row on [SCR-08] bricks the account.
-      const members = [member('ADMIN'), member('ADMIN'), member('EDITOR')];
+    it('accepts two ADMINs, which the old OWNER model rejected', () => {
+      // The prototype's own shared-account fixture is two ADMINs; under createdBy they are
+      // distinguished by who created the account, not by holding a different role.
+      const members = [member(CREATOR, 'ADMIN'), member(OTHER, 'ADMIN')];
+      expect(accountSchema.safeParse({ ...base, members }).success).toBe(true);
+    });
+
+    it('rejects an account whose creator is not a member', () => {
+      // Nobody could then administer it — [LOG-16] gates every account action on isCreator, so a
+      // creator outside members[] is the same brick the old exactly-one-OWNER rule prevented.
+      const members = [member(OTHER, 'ADMIN')];
       expect(accountSchema.safeParse({ ...base, members }).success).toBe(false);
     });
 
-    it('rejects an account with two owners', () => {
-      const members = [member('OWNER'), member('OWNER')];
-      expect(accountSchema.safeParse({ ...base, members }).success).toBe(false);
-    });
-
-    it('does not let a client set members or permissions at creation', () => {
+    it('does not let a client set createdBy, members or permissions at creation', () => {
       const parsed = createAccountInputSchema.parse({
         name: 'My Money',
         kind: 'PERSONAL',
         initial: 'A',
-        members: [member('ADMIN')],
+        createdBy: OTHER,
+        members: [member(OTHER, 'ADMIN')],
         permissions: ROLE_PERMISSION_SEED,
       });
+      expect(parsed).not.toHaveProperty('createdBy');
       expect(parsed).not.toHaveProperty('members');
       expect(parsed).not.toHaveProperty('permissions');
     });
   });
 
-  it('does not let an invite confer OWNER', () => {
-    const asAdmin = createInviteInputSchema.safeParse({ contact: 'a@b.com', role: 'ADMIN' });
-    const asOwner = createInviteInputSchema.safeParse({ contact: 'a@b.com', role: 'OWNER' });
-    expect(asAdmin.success).toBe(true);
-    expect(asOwner.success).toBe(false);
+  it('accepts every role on an invite and nothing else', () => {
+    // [OVL-15]'s THEY JOIN AS pills. An invite confers a role, never ownership — createdBy is set
+    // at creation and never changes ([LOG-16]), so no value here escalates into administering.
+    for (const role of roleSchema.options) {
+      expect(createInviteInputSchema.safeParse({ contact: 'a@b.com', role }).success).toBe(true);
+    }
+    expect(createInviteInputSchema.safeParse({ contact: 'a@b.com', role: 'OWNER' }).success).toBe(
+      false,
+    );
   });
 
   it('seeds the [LOG-01] matrix', () => {
@@ -442,8 +450,9 @@ describe('accountSummarySchema', () => {
     name: 'Sharma Family',
     kind: 'SHARED' as const,
     initial: 'S',
-    members: [{ userId: OID, name: 'Ananya Sharma', role: 'OWNER' as const }],
-    myCapabilities: OWNER_PERMISSIONS,
+    createdBy: OID,
+    members: [{ userId: OID, name: 'Ananya Sharma', role: 'ADMIN' as const }],
+    myCapabilities: ROLE_PERMISSION_SEED.ADMIN,
     stats: { cin: 120000, cout: 37480, bal: 82520 },
     bookCount: 3,
   };
@@ -472,10 +481,13 @@ describe('accountSummarySchema', () => {
     expect(permissionsSchema.safeParse(parsed.myCapabilities).success).toBe(true);
   });
 
-  it('represents an OWNER member, which the four assignable chips cannot', () => {
-    // Every account has exactly one OWNER, so the member projection needs the full role enum.
-    expect(assignableRoleSchema.safeParse('OWNER').success).toBe(false);
-    expect(accountSummarySchema.safeParse(summary).success).toBe(true);
+  it('carries createdBy, which myCapabilities cannot stand in for', () => {
+    // [LOG-16]: a non-creating ADMIN holds identical capabilities to the creator under the seeded
+    // matrix, yet only the creator gets [SCR-08]'s editable variant and its Delete account row.
+    // Without this field the client cannot tell the two apart.
+    const parsed = accountSummarySchema.parse(summary);
+    expect(parsed.createdBy).toBe(OID);
+    expect(accountSummarySchema.safeParse({ ...summary, createdBy: undefined }).success).toBe(false);
   });
 
   it('distinguishes "not allowed to see a balance" from "no books"', () => {

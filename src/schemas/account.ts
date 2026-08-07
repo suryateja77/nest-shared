@@ -1,10 +1,18 @@
 import { z } from 'zod';
 import { bookStatsSchema } from './book.js';
 import { objectId, timestampsSchema } from './common.js';
+import { createInviteInputSchema } from './invite.js';
 import { permissionsSchema, roleSchema, rolePermissionsSchema } from './role.js';
 
 export const accountKindSchema = z.enum(['SHARED', 'PERSONAL']);
 export type AccountKind = z.infer<typeof accountKindSchema>;
+
+/**
+ * Family scale, not an arbitrary round number: `[SCR-04]`'s account rows read `4 MEMBERS`, and
+ * `[OVL-17]`'s delete confirm names the member count in a sentence. A household that needs more
+ * than this is not the product `PRODUCT-SPEC.md` describes.
+ */
+export const MAX_INVITES_PER_ACCOUNT = 20;
 
 /**
  * A member of an account ([LOG-01]). `contact` is the email or phone the member was invited by —
@@ -32,6 +40,22 @@ const accountBaseSchema = z
     name: z.string().min(1).max(80),
     kind: accountKindSchema,
     /**
+     * The member who created this account — `[LOG-01]`'s `createdBy`, and the account's whole
+     * authority model ([LOG-16]).
+     *
+     * **An id, not a name.** `[LOG-01]` writes `createdBy: string` and `[LOG-16]` compares it as
+     * `account.createdBy === profile.name`, but that is the prototype having no user records to
+     * point at — the same shorthand that makes its members a bare `{ name, contact, role }`. A name
+     * is a mutable, non-unique label: the seed alone carries four Sharmas, and `profileSchema.name`
+     * carries no uniqueness constraint. Every other authorship field in this contract is already an
+     * id (`Entry.createdBy`, `Entry.updatedBy`), and `accountMemberSchema.userId` is required, so
+     * there is always a real id to reference.
+     *
+     * `[SCR-08]`'s copy ("ONLY {FIRST}, WHO CREATED THIS ACCOUNT…") resolves the name by finding the
+     * member whose `userId` matches, so no denormalised `createdByName` is needed.
+     */
+    createdBy: objectId,
+    /**
      * The letter shown in the account's square chip on [SCR-04]. Stored rather than derived: the
      * prototype's personal account "My Money" carries the initial `A` (the owner's), so it does not
      * always follow from the account name.
@@ -44,40 +68,64 @@ const accountBaseSchema = z
   .merge(timestampsSchema);
 
 /**
- * An account holds **exactly one** `OWNER` — the member who created it, shared or personal.
+ * **The creator is always a member.** This is the account's floor of administrability, and it
+ * replaces the exactly-one-`OWNER` refinement this schema used to carry.
  *
- * This is the account's floor of administrability. `OWNER`'s capabilities are constants outside the
- * editable matrix, so guaranteeing one member always holds the role guarantees `manageMembers` is
- * always held by somebody. Without it an account can be bricked from inside the designed UI:
- * [SCR-08] lets an admin toggle `Manage members` off the ADMIN row, and if no role in the matrix
- * grants it and no owner exists, membership can never be changed again.
+ * The old invariant guaranteed somebody always held `manageMembers`, because `OWNER`'s capabilities
+ * sat outside the editable matrix. `createdBy` gives that guarantee more directly and more strongly:
+ * [LOG-16] gates every account-administration action on `isCreator`, **deliberately overriding the
+ * `Manage members` capability** — "an ADMIN who did not create the account still cannot edit it" —
+ * so the creator's authority never depended on a matrix row in the first place and cannot be toggled
+ * away on [SCR-08]. `createdBy` is set once at creation ([LOG-15]) and never changes.
  *
- * Zero owners is therefore invalid, which deliberately rejects the prototype's shared-account
- * fixture (two ADMINs, no owner) — that seed never exercises account creation. More than one is
- * invalid too: `OWNER` is not assignable, so a second one cannot be arrived at legitimately.
+ * What still has to be true is that the creator is *reachable*: an account whose `createdBy` names
+ * nobody in `members[]` has no one who can administer it, which is the same brick the old refinement
+ * existed to prevent. Hence this check rather than none.
  *
- * The transitions this cannot see — removing or demoting the owner, and transferring the role —
- * are server-enforced; see the `nest-authz` skill.
+ * The transitions this cannot see — removing or demoting the creator, and transferring ownership —
+ * are server-enforced; see the `nest-authz` skill. A state schema validates the result, never the
+ * step that produced it.
  */
 export const accountSchema = accountBaseSchema.refine(
-  (account) => account.members.filter((member) => member.role === 'OWNER').length === 1,
-  'An account must have exactly one OWNER',
+  (account) => account.members.some((member) => member.userId === account.createdBy),
+  'An account’s creator must be one of its members',
 );
 export type Account = z.infer<typeof accountSchema>;
 
 /**
- * `members` and `permissions` are absent by design — the server owns both at creation:
- * `members` becomes exactly `[{ creator, role: 'OWNER' }]` from the authenticated session, and
- * `permissions` is seeded from `ROLE_PERMISSION_SEED`.
+ * `[OVL-15]`'s create sheet. Only `name`, `kind` and `initial` cross the wire.
  *
- * A client that could supply either could hand itself an account with no owner, or one whose matrix
- * grants nothing — the two states this model exists to prevent.
+ * `createdBy`, `members` and `permissions` are absent by design — the server owns all three at
+ * creation: `createdBy` and the single `members` entry both come from the authenticated session
+ * ([LOG-15] creates the account and its creator in one write), and `permissions` is seeded from
+ * `ROLE_PERMISSION_SEED`.
+ *
+ * A client that could supply any of them could hand itself an account it does not belong to, name
+ * someone else as its creator, or seed a matrix that grants nothing — the states this model exists
+ * to prevent.
  */
-export const createAccountInputSchema = accountBaseSchema.pick({
-  name: true,
-  kind: true,
-  initial: true,
-});
+export const createAccountInputSchema = accountBaseSchema
+  .pick({
+    name: true,
+    kind: true,
+    initial: true,
+  })
+  .extend({
+    /**
+     * The invites `[OVL-15]` queued in its **WILL BE INVITED** list, sent with the account rather
+     * than as follow-up requests.
+     *
+     * `[LOG-15]` makes creation **one atomic transaction** — account, books and
+     * `invitesByAcct[id]` all land in a single `setState`. Splitting it into
+     * `POST /accounts` + N × `POST /accounts/:id/invites` would let the third invite fail after the
+     * account exists, leaving a half-built invite list and no way to repair it: `[SCR-08]`, the
+     * screen that manages invites, is not built yet. One request cannot half-succeed.
+     *
+     * Capped at family scale. Uncapped, one request is an unbounded write amplification, and
+     * `[SCR-08]`'s pending-invite list is designed as a handful of rows, not a mailing list.
+     */
+    invites: z.array(createInviteInputSchema).max(MAX_INVITES_PER_ACCOUNT).default([]),
+  });
 export type CreateAccountInput = z.infer<typeof createAccountInputSchema>;
 
 /**
@@ -99,8 +147,8 @@ export type UpdateAccountInput = z.infer<typeof updateAccountInputSchema>;
  * it with the account list would hand every member's contact details to every other member,
  * including a `TEEN`, to draw `[SCR-05]`'s overlapping avatars.
  *
- * `role` stays the full `roleSchema`, not `assignableRoleSchema` — every account has exactly one
- * `OWNER` member, so the four assignable chips cannot represent a real `members[]`.
+ * `role` is the plain `roleSchema` — since ownership left the role enum, the four chips [SCR-08]
+ * renders are exactly the roles a stored member can hold, so no second enum is needed here.
  */
 export const accountMemberSummarySchema = accountMemberSchema.pick({
   userId: true,
@@ -119,11 +167,16 @@ export type AccountMemberSummary = z.infer<typeof accountMemberSummarySchema>;
  *   read its own role, index the matrix and special-case `OWNER` (which is absent from the matrix by
  *   design) — that is the client re-deriving capabilities, which `nest-authz` forbids.
  * - **`myCapabilities`** instead: the caller's own six capabilities, already resolved server-side
- *   against `OWNER_PERMISSIONS` or the account's stored matrix. The UI gates on this and never
- *   computes it.
+ *   against the account's stored matrix. The UI gates on this and never computes it.
+ *
+ * **`createdBy` is included** ([LOG-16]). It is the one fact `myCapabilities` cannot stand in for:
+ * a non-creating ADMIN and the creator hold identical capabilities under the seeded matrix, yet only
+ * the creator gets [SCR-08]'s editable variant, and only the creator sees `Delete account` where
+ * everyone else sees `Leave account`. Not a disclosure — `members[]` already carries every member's
+ * `userId`, so this names one of them rather than revealing a new one.
  */
 export const accountSummarySchema = accountBaseSchema
-  .pick({ id: true, name: true, kind: true, initial: true })
+  .pick({ id: true, name: true, kind: true, initial: true, createdBy: true })
   .extend({
     members: z.array(accountMemberSummarySchema),
     myCapabilities: permissionsSchema,

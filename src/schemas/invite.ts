@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { objectId, timestampsSchema } from './common.js';
-import { assignableRoleSchema } from './role.js';
+import { roleSchema } from './role.js';
 
 /**
  * [LOG-01] gives `Invite.status` as only `'pending'`, because the prototype drops an invite once it
@@ -26,8 +26,15 @@ export const inviteSchema = z
      * stranger is a Nest user beyond what the invite flow needs."
      */
     name: z.string().min(1).max(80).nullable(),
-    /** Assignable roles only — an invite can never confer `OWNER`. */
-    role: assignableRoleSchema,
+    /**
+     * `[OVL-15]`'s `THEY JOIN AS` pills and `[OVL-16]`'s role rows — ADMIN / EDITOR / VIEWER / TEEN,
+     * defaulting to EDITOR ([LOG-15]).
+     *
+     * An invite confers a role, never ownership: `createdBy` is set at creation and never changes
+     * ([LOG-16]), so there is no value here that could escalate the invitee into administering the
+     * account.
+     */
+    role: roleSchema,
     status: inviteStatusSchema,
   })
   .merge(timestampsSchema);

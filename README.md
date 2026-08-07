@@ -8,7 +8,7 @@ See [`../TECH_STACK.md`](../TECH_STACK.md) for how this fits into the overall ar
 
 - `src/schemas/common.ts` — shared primitives (`objectId`, `moneyAmount`, `timestampsSchema`, and the **three distinct temporal types**: `dateOnlyString`, `localDateTimeString` for zone-less wall clocks, `isoDateString` for instants — do not mix them)
 - `src/schemas/http.ts` — the transport envelope: `apiErrorSchema`, `errorCodeSchema`, the `{ items, nextCursor }` list shape
-- `src/schemas/role.ts` — the `Role` enum and the six-capability `Permissions` matrix. `OWNER` is real but **not assignable**: its capabilities are the frozen `OWNER_PERMISSIONS`, kept outside the editable matrix so `[SCR-08]` cannot strip the account creator's rights
+- `src/schemas/role.ts` — the `Role` enum (`ADMIN`/`EDITOR`/`VIEWER`/`TEEN`) and the six-capability `Permissions` matrix. **Ownership is not a role**: the account creator is `Account.createdBy`, per `[LOG-01]`'s glossary, and `[LOG-16]` gates every account-administration action on it — deliberately overriding the `manageMembers` capability, so an ADMIN who did not create the account still cannot edit it
 - `src/schemas/account.ts`, `book.ts`, `entry.ts`, `due.ts`, `reminder.ts`, `invite.ts` — one file per domain entity, each exporting:
   - the full entity schema/type (as stored)
   - a `create*InputSchema`/`Create*Input` (what the API accepts to create one)
