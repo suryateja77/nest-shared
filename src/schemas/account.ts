@@ -15,6 +15,19 @@ export type AccountKind = z.infer<typeof accountKindSchema>;
 export const MAX_INVITES_PER_ACCOUNT = 20;
 
 /**
+ * How many accounts one person may belong to — a product ceiling set by the user.
+ *
+ * `[SCR-04]` is a short scrolling list and `[OVL-01]`'s switcher is a bottom sheet; neither is
+ * designed for an unbounded set. It also bounds the one write in the service that creates its own
+ * scope (`POST /accounts`), which has no membership to authorize against and would otherwise be
+ * unlimited for any signed-in caller.
+ *
+ * Counted over membership rather than authorship, since an accepted invite also puts an account on
+ * that list.
+ */
+export const MAX_ACCOUNTS_PER_USER = 5;
+
+/**
  * A member of an account ([LOG-01]). `contact` is the email or phone the member was invited by —
  * it is what [SCR-08] renders under the name, and it is how a person is identified before they have
  * a user record. A pending invitee lives in `Invite` and only becomes a member once accepted, so
