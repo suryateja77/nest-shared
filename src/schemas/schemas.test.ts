@@ -36,6 +36,7 @@ import {
   rolePermissionsSchema,
 } from './role.js';
 import { createInviteInputSchema } from './invite.js';
+import { updateProfileDetailsInputSchema } from './profile.js';
 import { sendOtpInputSchema, verifyOtpInputSchema } from './auth.js';
 
 const OID = '507f1f77bcf86cd799439011';
@@ -534,5 +535,36 @@ describe('sendOtpInputSchema / verifyOtpInputSchema', () => {
     expect(verifyOtpInputSchema.safeParse({ ...base, code: '999' }).success).toBe(false);
     expect(verifyOtpInputSchema.safeParse({ ...base, code: '99999' }).success).toBe(false);
     expect(verifyOtpInputSchema.safeParse({ ...base, code: 'abcd' }).success).toBe(false);
+  });
+});
+
+describe('updateProfileDetailsInputSchema', () => {
+  it('accepts name and username alone or together', () => {
+    expect(updateProfileDetailsInputSchema.safeParse({}).success).toBe(true);
+    expect(updateProfileDetailsInputSchema.safeParse({ name: 'Ananya Sharma' }).success).toBe(true);
+    expect(updateProfileDetailsInputSchema.safeParse({ username: 'ananya' }).success).toBe(true);
+    expect(
+      updateProfileDetailsInputSchema.safeParse({ name: 'Ananya Sharma', username: 'ananya' })
+        .success,
+    ).toBe(true);
+  });
+
+  it('does not accept a client-supplied id, email, phone or avatarUrl', () => {
+    // The whole point of narrowing this off updateProfileInputSchema: email/phone are sign-in
+    // identifiers that can only change through OTP verification (routes/profile.ts's
+    // changeIdentifierRoutes), and avatarUrl has no writer at all yet. A route built against this
+    // type cannot compile a write from any of the four, regardless of what the handler does.
+    const parsed = updateProfileDetailsInputSchema.parse({
+      id: OID,
+      name: 'Ananya Sharma',
+      email: 'attacker@evil.example',
+      phone: '9000000000',
+      avatarUrl: 'https://evil.example/x.png',
+    });
+    expect(parsed).not.toHaveProperty('id');
+    expect(parsed).not.toHaveProperty('email');
+    expect(parsed).not.toHaveProperty('phone');
+    expect(parsed).not.toHaveProperty('avatarUrl');
+    expect(parsed).toEqual({ name: 'Ananya Sharma' });
   });
 });
