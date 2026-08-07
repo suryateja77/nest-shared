@@ -44,9 +44,42 @@ export type Invite = z.infer<typeof inviteSchema>;
  * `role` is set by the inviter and is **not** re-accepted from the invitee on acceptance —
  * otherwise anyone could join as ADMIN. `name` is server-resolved, never client-supplied.
  */
-export const createInviteInputSchema = inviteSchema.pick({
-  contact: true,
-  role: true,
+export const createInviteInputSchema = inviteSchema.pick({ contact: true, role: true }).extend({
+  /**
+   * A contact must actually be a phone number or an email address.
+   *
+   * `inviteSchema.contact` is `z.string().max(120)` because it also types **stored** rows, including
+   * legacy ones. On the way *in* that is too loose to be safe: the server derives a `contactKey` by
+   * looking for an `@` and otherwise stripping non-digits, so
+   * `"9876543210 — overdue, pay at nest-billing.example"` normalises to a key that matches the real
+   * victim while `contact` keeps the whole attacker-written string — and `contact` is what
+   * `[SCR-08]`'s pending-invite row renders verbatim. That turns a correctly-addressed invite into a
+   * delivery channel for arbitrary text.
+   *
+   * Ten digits is the Indian mobile length the design assumes throughout (`[SCR-02]`'s placeholder
+   * is `98450 22118`), and it is a floor rather than an exact match so a `+91` or `0` prefix still
+   * passes. This validates *shape*, not reachability — nothing here proves the person exists, which
+   * is deliberate: `[LOG-12]` forbids the lookup that would.
+   */
+  contact: z
+    .string()
+    .trim()
+    .max(120)
+    .refine(
+      (value) =>
+        value.includes('@')
+          ? z.email().safeParse(value).success
+          : /**
+             * The **whole** string must look like a phone number, not merely contain ten digits.
+             * Counting digits alone accepts
+             * `"9876543210 — overdue, pay at nest-billing.example"`, which is exactly the payload
+             * this rule exists to refuse: it normalises to the victim's real `contactKey` while
+             * `contact` — the value `[SCR-08]` renders verbatim — keeps the attacker's sentence.
+             * Separators are allowed because `[SCR-02]`'s own placeholder is `98450 22118`.
+             */
+            /^\+?[\d\s\-()]+$/.test(value) && value.replace(/\D/g, '').length >= 10,
+      'Enter a valid phone number or email address',
+    ),
 });
 export type CreateInviteInput = z.infer<typeof createInviteInputSchema>;
 

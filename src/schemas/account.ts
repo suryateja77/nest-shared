@@ -112,6 +112,14 @@ export const createAccountInputSchema = accountBaseSchema
   })
   .extend({
     /**
+     * **Trimmed here, not only in the sheet.** `[LOG-15]` requires "a non-empty **trimmed** name",
+     * and a bare `.min(1)` accepts `"   "`. That is not cosmetic: `[OVL-17]`'s delete confirmation
+     * unlocks on `dangerText.trim() === account.name.trim()`, so an all-whitespace account name
+     * makes an **empty** input satisfy the typed confirmation that exists to slow a destructive act
+     * down. Trimming at the contract closes it for every client, present and future.
+     */
+    name: z.string().trim().min(1).max(80),
+    /**
      * The invites `[OVL-15]` queued in its **WILL BE INVITED** list, sent with the account rather
      * than as follow-up requests.
      *
@@ -164,8 +172,8 @@ export type AccountMemberSummary = z.infer<typeof accountMemberSummarySchema>;
  *
  * - **No `contact`** on members — see `accountMemberSummarySchema`.
  * - **No `permissions` matrix.** Shipping it would force the client to find itself in `members[]`,
- *   read its own role, index the matrix and special-case `OWNER` (which is absent from the matrix by
- *   design) — that is the client re-deriving capabilities, which `nest-authz` forbids.
+ *   read its own role and index the matrix — that is the client re-deriving capabilities, which
+ *   `nest-authz` forbids.
  * - **`myCapabilities`** instead: the caller's own six capabilities, already resolved server-side
  *   against the account's stored matrix. The UI gates on this and never computes it.
  *

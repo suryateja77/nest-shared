@@ -424,6 +424,35 @@ describe('permissions', () => {
     });
   });
 
+  it('trims the account name so a whitespace-only one cannot be created', () => {
+    // [OVL-17]'s delete confirm unlocks on dangerText.trim() === account.name.trim(). A name of
+    // spaces would make an empty input satisfy the gate that exists to slow a deletion down.
+    expect(createAccountInputSchema.safeParse({ name: '   ', kind: 'SHARED', initial: 'S' }).success)
+      .toBe(false);
+
+    const parsed = createAccountInputSchema.parse({
+      name: '  PG Rent  ',
+      kind: 'SHARED',
+      initial: 'P',
+    });
+    expect(parsed.name).toBe('PG Rent');
+  });
+
+  it('requires an invite contact to be a phone number or an email', () => {
+    // contactKeyOf strips non-digits when it sees no '@', so free text normalises to a key that can
+    // match a real person while `contact` — which [SCR-08] renders verbatim — keeps the whole string.
+    const invite = (contact: string) =>
+      createInviteInputSchema.safeParse({ contact, role: 'EDITOR' }).success;
+
+    expect(invite('9876543210')).toBe(true);
+    expect(invite('+91 98450 22118')).toBe(true);
+    expect(invite('someone@example.com')).toBe(true);
+
+    expect(invite('7')).toBe(false);
+    expect(invite('9876543210 — overdue, pay at nest-billing.example')).toBe(false);
+    expect(invite('not-an-email@')).toBe(false);
+  });
+
   it('accepts every role on an invite and nothing else', () => {
     // [OVL-15]'s THEY JOIN AS pills. An invite confers a role, never ownership — createdBy is set
     // at creation and never changes ([LOG-16]), so no value here escalates into administering.
