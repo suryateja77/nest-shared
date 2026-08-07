@@ -548,7 +548,9 @@ describe('signUpInputSchema / signInInputSchema', () => {
   const signUp = { channel: 'phone' as const, identifier: '9999999999', name: 'Ananya Sharma' };
 
   it('enforces the password policy on sign-up', () => {
-    expect(signUpInputSchema.safeParse({ ...signUp, password: 'correct-horse' }).success).toBe(true);
+    expect(signUpInputSchema.safeParse({ ...signUp, password: 'correct-horse' }).success).toBe(
+      true,
+    );
     expect(signUpInputSchema.safeParse({ ...signUp, password: 'short12' }).success).toBe(false);
     expect(
       signUpInputSchema.safeParse({ ...signUp, password: 'x'.repeat(PASSWORD_MAX_LENGTH + 1) })
@@ -559,8 +561,9 @@ describe('signUpInputSchema / signInInputSchema', () => {
   it('trims the name before bounding it, so whitespace cannot pass min(1)', () => {
     // The reason signUpNameSchema is not just profileSchema.shape.name: an all-whitespace name
     // satisfies min(1) untrimmed and would render as a blank in [SCR-04]'s greeting.
-    expect(signUpInputSchema.safeParse({ ...signUp, name: '   ', password: 'a-good-password' }))
-      .toMatchObject({ success: false });
+    expect(
+      signUpInputSchema.safeParse({ ...signUp, name: '   ', password: 'a-good-password' }),
+    ).toMatchObject({ success: false });
 
     const parsed = signUpInputSchema.parse({
       ...signUp,
@@ -572,9 +575,9 @@ describe('signUpInputSchema / signInInputSchema', () => {
 
   it('keeps the channel and identifier tied together, as the OTP schemas do', () => {
     const password = 'a-good-password';
-    expect(
-      signUpInputSchema.safeParse({ ...signUp, channel: 'email', password }).success,
-    ).toBe(false);
+    expect(signUpInputSchema.safeParse({ ...signUp, channel: 'email', password }).success).toBe(
+      false,
+    );
     expect(
       signInInputSchema.safeParse({ channel: 'phone', identifier: 'ananya@nest.com', password })
         .success,

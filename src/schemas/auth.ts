@@ -81,10 +81,7 @@ export const passwordSchema = z
  * `profileSchema.shape.name`: `"   "` satisfies `min(1)` untrimmed, and `[SCR-04]`'s greeting and
  * every member row would then render a blank where a person's name belongs.
  */
-const signUpNameSchema = z
-  .string()
-  .trim()
-  .pipe(profileSchema.shape.name);
+const signUpNameSchema = z.string().trim().pipe(profileSchema.shape.name);
 
 /**
  * `POST /auth/sign-up`. No `username` field: `[REQ-2]` makes it part of the profile, but nothing in
