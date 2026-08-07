@@ -37,7 +37,13 @@ import {
 } from './role.js';
 import { createInviteInputSchema } from './invite.js';
 import { updateProfileDetailsInputSchema } from './profile.js';
-import { sendOtpInputSchema, verifyOtpInputSchema } from './auth.js';
+import {
+  PASSWORD_MAX_LENGTH,
+  sendOtpInputSchema,
+  signInInputSchema,
+  signUpInputSchema,
+  verifyOtpInputSchema,
+} from './auth.js';
 
 const OID = '507f1f77bcf86cd799439011';
 
@@ -535,6 +541,70 @@ describe('sendOtpInputSchema / verifyOtpInputSchema', () => {
     expect(verifyOtpInputSchema.safeParse({ ...base, code: '999' }).success).toBe(false);
     expect(verifyOtpInputSchema.safeParse({ ...base, code: '99999' }).success).toBe(false);
     expect(verifyOtpInputSchema.safeParse({ ...base, code: 'abcd' }).success).toBe(false);
+  });
+});
+
+describe('signUpInputSchema / signInInputSchema', () => {
+  const signUp = { channel: 'phone' as const, identifier: '9999999999', name: 'Ananya Sharma' };
+
+  it('enforces the password policy on sign-up', () => {
+    expect(signUpInputSchema.safeParse({ ...signUp, password: 'correct-horse' }).success).toBe(true);
+    expect(signUpInputSchema.safeParse({ ...signUp, password: 'short12' }).success).toBe(false);
+    expect(
+      signUpInputSchema.safeParse({ ...signUp, password: 'x'.repeat(PASSWORD_MAX_LENGTH + 1) })
+        .success,
+    ).toBe(false);
+  });
+
+  it('trims the name before bounding it, so whitespace cannot pass min(1)', () => {
+    // The reason signUpNameSchema is not just profileSchema.shape.name: an all-whitespace name
+    // satisfies min(1) untrimmed and would render as a blank in [SCR-04]'s greeting.
+    expect(signUpInputSchema.safeParse({ ...signUp, name: '   ', password: 'a-good-password' }))
+      .toMatchObject({ success: false });
+
+    const parsed = signUpInputSchema.parse({
+      ...signUp,
+      name: '  Ananya Sharma  ',
+      password: 'a-good-password',
+    });
+    expect(parsed.name).toBe('Ananya Sharma');
+  });
+
+  it('keeps the channel and identifier tied together, as the OTP schemas do', () => {
+    const password = 'a-good-password';
+    expect(
+      signUpInputSchema.safeParse({ ...signUp, channel: 'email', password }).success,
+    ).toBe(false);
+    expect(
+      signInInputSchema.safeParse({ channel: 'phone', identifier: 'ananya@nest.com', password })
+        .success,
+    ).toBe(false);
+  });
+
+  it('does not apply the sign-up password policy at the sign-in gate', () => {
+    // Deliberate: a policy applied to login locks out every existing user the day the minimum
+    // rises, with a field-validation error rather than a way to reset. Sign-in enforces only the
+    // DoS bound.
+    const base = { channel: 'phone' as const, identifier: '9999999999' };
+    expect(signInInputSchema.safeParse({ ...base, password: 'short12' }).success).toBe(true);
+    expect(signInInputSchema.safeParse({ ...base, password: '' }).success).toBe(false);
+    expect(
+      signInInputSchema.safeParse({ ...base, password: 'x'.repeat(PASSWORD_MAX_LENGTH + 1) })
+        .success,
+    ).toBe(false);
+  });
+
+  it('does not accept a client-supplied username or id', () => {
+    // The server derives the username; nothing about a new user's identity is client-chosen
+    // beyond the identifier they are proving and the name they are displayed under.
+    const parsed = signUpInputSchema.parse({
+      ...signUp,
+      password: 'a-good-password',
+      username: 'admin',
+      id: OID,
+    });
+    expect(parsed).not.toHaveProperty('username');
+    expect(parsed).not.toHaveProperty('id');
   });
 });
 
