@@ -12,7 +12,6 @@ import {
 } from './common.js';
 import { accountSchema, accountSummarySchema, createAccountInputSchema } from './account.js';
 import {
-  bookBaseSchema,
   bookSchema,
   bookStatsSchema,
   createBookInputSchema,
@@ -167,15 +166,11 @@ describe('createBookInputSchema', () => {
     ).toBe(false);
   });
 
-  it('is derivable from the base — the uniqueness checks sit on the arrays, not the object', () => {
-    // zod refuses .pick()/.omit() on an object carrying refinements, so the derivable shape has to
-    // be the *base*: `bookSchema` itself now carries the creator-is-a-member refinement, and every
-    // input and response schema is cut from `bookBaseSchema` for exactly that reason.
-    expect(() => bookBaseSchema.omit({ id: true })).not.toThrow();
-    // The array-level uniqueness checks are what this test was written to pin, and they still do
-    // not block derivation — they sit on `categories`/`paymentModes`/`customFields`, not the object.
-    expect(() => bookBaseSchema.omit({ categories: true, customFields: true })).not.toThrow();
-  });
+  // The old "is derivable" test asserted `bookSchema.omit({ id: true })` does not throw, guarding
+  // against someone adding an object-level refinement and breaking the input schemas. That guard is
+  // now structural: the base is module-private and every derived schema is cut from it at module
+  // scope, so a refinement on the base makes this whole file fail to *import*. A louder signal than
+  // an assertion, and one that cannot be deleted by accident.
 
   it('refuses a book whose creator is not one of its members', () => {
     // [OVL-09] locks the creator's own row on ("YOU · ALWAYS HAS ACCESS"). Without this, [LOG-17]
@@ -188,9 +183,9 @@ describe('createBookInputSchema', () => {
       updatedAt: '2026-07-01T00:00:00.000Z',
     };
     expect(bookSchema.safeParse({ ...base, createdBy: OID, members: [OID] }).success).toBe(true);
-    expect(
-      bookSchema.safeParse({ ...base, createdBy: OID, members: [OTHER_MEMBER] }).success,
-    ).toBe(false);
+    expect(bookSchema.safeParse({ ...base, createdBy: OID, members: [OTHER_MEMBER] }).success).toBe(
+      false,
+    );
     expect(bookSchema.safeParse({ ...base, createdBy: OID, members: [] }).success).toBe(false);
   });
 

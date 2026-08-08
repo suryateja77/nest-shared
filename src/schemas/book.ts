@@ -34,7 +34,16 @@ const isUnique = (values: readonly string[]): boolean => new Set(values).size ==
  */
 const uniqueLabels = z.array(z.string().min(1).max(40)).refine(isUnique, 'Entries must be unique');
 
-export const bookBaseSchema = z
+/**
+ * Module-private, exactly as `accountBaseSchema` is, and for a stronger reason than symmetry.
+ *
+ * `z.infer` of a refined schema is identical to the base object's inferred type, so an exported
+ * `bookBaseSchema.parse(x)` would hand back a value typed `Book` that had skipped
+ * `creatorIsAMember`. `nest-shared` is the contract; publishing an invariant-free alias of its
+ * central entity is the one thing it must not do. It exists only so the input and response schemas
+ * below can be cut from it — zod refuses `.pick()`/`.omit()` on an object carrying a refinement.
+ */
+const bookBaseSchema = z
   .object({
     id: objectId,
     accountId: objectId,
@@ -136,18 +145,41 @@ export const createBookInputSchema = bookBaseSchema
 export type CreateBookInput = z.infer<typeof createBookInputSchema>;
 
 /**
- * Same omission, for a second reason: moving a book between accounts ([REQ-4]) needs `bookSettings`
- * on **both** the source and the destination account, so it must not be reachable through a general
- * update either.
+ * **An allowlist of exactly what `[SCR-07]` Book settings edits**, not the create input minus a few
+ * fields — the same shape, and the same reasoning, as `updateAccountInputSchema`.
  *
- * **`members` is omitted too, deliberately rather than by inheritance.** The design has exactly two
- * membership mutations — the initial set at `[OVL-09]`, and a **self-only** *Leave book*
- * (`[SCR-07]` → `[OVL-17]`), which removes one id and is undoable. Neither is a bulk replace, and
- * adding a member back is `[GAP-2]`. Letting `.partial()` carry `members` through would open a
- * general "rewrite who can see this book" path that no screen offers and no route authorizes.
- * `updateAccountInputSchema` excludes account members for the identical reason.
+ * `[SCR-07]` offers the name, the three entry-field switches, the custom fields, and the category
+ * and payment-mode lists. Nothing else. Everything absent here is absent because no screen changes
+ * it, and a contract that can express a change no screen offers is a route waiting to be written
+ * against it:
+ *
+ * - **`opening`** is the sharp one. It is the only field on a book that moves every figure
+ *   `[LOG-05]` derives, so a general update rewriting it would silently restate every historical
+ *   balance on `[SCR-06]` — with no entry to point at and no undo, which `[LOG-03]` requires on
+ *   anything destructive. It looks like an ordinary field and behaves like a destructive one.
+ * - **`accountId`** — moving a book between accounts (`[REQ-4]`) needs `bookSettings` on **both**
+ *   the source and the destination, so it needs its own authorized operation.
+ * - **`createdBy`** is the authenticated creator, and `[LOG-17]` hangs Move, Archive and Delete off
+ *   it.
+ * - **`members`** — the design has exactly two membership mutations: the initial set at `[OVL-09]`,
+ *   and a **self-only** *Leave book* (`[SCR-07]` → `[OVL-17]`), which removes one id and is
+ *   undoable. Neither is a bulk replace, and adding a member back is `[GAP-2]`.
+ * - **`tint`** and **`sub`** are acquired at creation from the book count and the chosen preset;
+ *   `[OVL-09]` offers no control for either and `[SCR-07]` does not edit them.
+ *
+ * Widening this is a deliberate act when a screen asks for it, which is the point.
  */
-export const updateBookInputSchema = createBookInputSchema.omit({ members: true }).partial();
+export const updateBookInputSchema = bookBaseSchema
+  .pick({
+    name: true,
+    categories: true,
+    paymentModes: true,
+    customFields: true,
+    useCategory: true,
+    useMode: true,
+    useAttach: true,
+  })
+  .partial();
 export type UpdateBookInput = z.infer<typeof updateBookInputSchema>;
 
 /**
