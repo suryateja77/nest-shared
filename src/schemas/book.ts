@@ -27,12 +27,36 @@ export type CustomField = z.infer<typeof customFieldSchema>;
 const isUnique = (values: readonly string[]): boolean => new Set(values).size === values.length;
 
 /**
+ * How many categories or payment modes one book may carry.
+ *
+ * **A length bound is a security control here, not tidiness.** These arrays are written by any
+ * member who can edit a book — and `provisionPersonalAccount` makes every new signup the ADMIN of
+ * their own account, so that is any signed-in user. Unbounded, one `PATCH` could store tens of
+ * thousands of labels within the 1 MB body limit, and every subsequent read of that book would
+ * re-serialise and re-validate all of them on the single process every family shares.
+ *
+ * Fifty is far above anything the design can draw: `[SCR-07]` renders these as a hand-built,
+ * numbered, individually reorderable list, and the largest preset ships nine.
+ */
+export const MAX_BOOK_LABELS = 50;
+
+/**
+ * How many custom fields one book may define. Lower than the label cap because each one is also a
+ * *key* on every entry — see `entrySchema.customValues`, which is bounded against this same number.
+ * `[SCR-07]`'s `+ ADD` offers four suggested names before falling back to `Note n`.
+ */
+export const MAX_CUSTOM_FIELDS = 20;
+
+/**
  * Categories and payment modes are grouping keys, not just labels: [LOG-05] aggregates cash-out
  * `byCat` and `byMode` for Insights. A duplicate would silently split one total into two rows, and
  * [SCR-07] lets these be renamed and reordered freely, so uniqueness is enforced here rather than
  * left to the editor.
  */
-const uniqueLabels = z.array(z.string().min(1).max(40)).refine(isUnique, 'Entries must be unique');
+const uniqueLabels = z
+  .array(z.string().min(1).max(40))
+  .max(MAX_BOOK_LABELS)
+  .refine(isUnique, 'Entries must be unique');
 
 /**
  * Module-private, exactly as `accountBaseSchema` is, and for a stronger reason than symmetry.
@@ -80,9 +104,16 @@ const bookBaseSchema = z
     members: z.array(objectId).refine(isUnique, 'Members must be unique'),
     categories: uniqueLabels,
     paymentModes: uniqueLabels,
-    /** Ids must be unique — an entry's `customValues` keys off them. */
+    /**
+     * Ids must be unique — an entry's `customValues` keys off them.
+     *
+     * Bounded here on `bookBaseSchema` rather than on the input schemas, so **both**
+     * `createBookInputSchema` and `updateBookInputSchema` inherit it. Capping only the update path
+     * would leave the same hole open one route over.
+     */
     customFields: z
       .array(customFieldSchema)
+      .max(MAX_CUSTOM_FIELDS)
       .refine((fields) => isUnique(fields.map((field) => field.id)), 'Field ids must be unique'),
     /**
      * Entry-field toggles from [SCR-07]. [OVL-08] states the rule for these two directly —

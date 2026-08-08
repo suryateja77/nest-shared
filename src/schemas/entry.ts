@@ -6,6 +6,7 @@ import {
   timeOfDayString,
   timestampsSchema,
 } from './common.js';
+import { MAX_CUSTOM_FIELDS } from './book.js';
 import { paginated, paginationQuerySchema, queryList } from './http.js';
 
 export const entryTypeSchema = z.enum(['in', 'out']);
@@ -64,8 +65,20 @@ export const entrySchema = z
      * and a ledger page of 100 such entries becomes a ~100 MB response every member of the account
      * pays for on `[SCR-06]`. `[OVL-08]` renders a text custom field as a single-line input, so
      * nothing the design can produce comes close.
+     *
+     * **The key count is bounded for the same reason the value length is**, and it was the hole the
+     * value bound left open: 20 000 boolean values carry no long strings at all and still make one
+     * `limit=100` page a ~64 MB response whose every key is run through the `objectId` regex. Capped
+     * against `MAX_CUSTOM_FIELDS` rather than a number of its own — a value keyed by an id that is
+     * not one of the book's fields is already refused by `entryRules`, so a legitimate entry can
+     * never carry more values than its book has fields.
      */
-    customValues: z.record(objectId, z.union([z.string().max(200), z.boolean()])).optional(),
+    customValues: z
+      .record(objectId, z.union([z.string().max(200), z.boolean()]))
+      .refine((values) => Object.keys(values).length <= MAX_CUSTOM_FIELDS, {
+        message: `A book has at most ${String(MAX_CUSTOM_FIELDS)} custom fields`,
+      })
+      .optional(),
     attachment: attachmentSchema.optional(),
   })
   .merge(timestampsSchema);
@@ -156,29 +169,35 @@ export const entriesQuerySchema = paginationQuerySchema.extend(entryFilterQueryS
 export type EntriesQuery = z.infer<typeof entriesQuerySchema>;
 
 /**
- * `GET /books/:bookId/entries/facets` — the two figures [OVL-04] needs that the page cannot give it.
+ * `GET /books/:bookId/entries/count` — [OVL-04]'s "Show 12 entries" button label.
  *
  * The sheet edits a **draft** copy of the filters and only applies it on confirm (`fDraft`), so its
- * "Show 12 entries" button describes a filter the ledger is not currently showing. That count
- * cannot come from the entries page, which is both paginated and fetched under the *applied*
- * filters.
+ * count describes a filter the ledger is not currently showing. That cannot come from the entries
+ * page, which is both paginated and fetched under the *applied* filters.
  */
-export const entryFacetsSchema = z.object({
+export const entryCountSchema = z.object({
   /** How many entries match the filters sent with **this** request — the prototype's `previewCount`. */
   matches: z.number().int().nonnegative(),
-  /**
-   * Distinct `createdBy` over the **whole book**, deliberately ignoring the request's filters.
-   *
-   * The prototype derives its ADDED BY chips the same way (`Object.keys(book.entries.reduce(...))`)
-   * — from who has actually written in this book, not from who *could*. Filtering this list by the
-   * draft would make chips vanish as soon as one was picked.
-   *
-   * Not `book.members` either: that is visibility ([LOG-17]), and the account's creator can write in
-   * a book without appearing in it, so a members-derived list would omit a real author.
-   */
+});
+export type EntryCount = z.infer<typeof entryCountSchema>;
+
+/**
+ * `GET /books/:bookId/entries/authors` — [OVL-04]'s **ADDED BY** chips.
+ *
+ * Distinct `createdBy` over the whole book. The prototype derives the same set the same way
+ * (`Object.keys(book.entries.reduce(...))`) — from who has actually written here, not from who
+ * *could*. Not `book.members` either: that is visibility ([LOG-17]), and the account's creator can
+ * write in a book without appearing in it, so a members-derived list would omit a real author.
+ *
+ * **A separate request from the count, deliberately**, though one sheet reads both. This answer does
+ * not vary with the filters and the count varies with every chip tap, so serving them together made
+ * the client re-fetch an unfiltered whole-book scan per keystroke. Two lifetimes, two routes, two
+ * cache keys.
+ */
+export const entryAuthorsSchema = z.object({
   authors: z.array(objectId),
 });
-export type EntryFacets = z.infer<typeof entryFacetsSchema>;
+export type EntryAuthors = z.infer<typeof entryAuthorsSchema>;
 
 /** `{ items, nextCursor }` of entries. */
 export const entriesPageSchema = paginated(entrySchema);

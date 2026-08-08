@@ -16,12 +16,15 @@ import {
   bookStatsSchema,
   createBookInputSchema,
   customFieldTypeSchema,
+  MAX_BOOK_LABELS,
+  MAX_CUSTOM_FIELDS,
   updateBookInputSchema,
 } from './book.js';
 import {
   createEntryInputSchema,
   entriesQuerySchema,
-  entryFacetsSchema,
+  entryAuthorsSchema,
+  entryCountSchema,
   entrySchema,
   updateEntryInputSchema,
 } from './entry.js';
@@ -766,17 +769,94 @@ describe('[OVL-04] entriesQuerySchema — the ledger filters', () => {
   });
 });
 
-describe('entryFacetsSchema', () => {
-  it('carries the draft match count and the book-wide author list', () => {
-    expect(entryFacetsSchema.parse({ matches: 12, authors: [OID] })).toEqual({
-      matches: 12,
-      authors: [OID],
-    });
+describe('[OVL-04] the two facet responses', () => {
+  it('keeps the draft count and the book-wide author list on separate responses', () => {
+    // Two lifetimes: the count changes with every chip tap, the author list never does. One
+    // response made the client re-fetch an unfiltered whole-book scan per keystroke.
+    expect(entryCountSchema.parse({ matches: 12 })).toEqual({ matches: 12 });
+    expect(entryAuthorsSchema.parse({ authors: [OID] })).toEqual({ authors: [OID] });
   });
 
   it('rejects a negative or fractional match count', () => {
-    expect(entryFacetsSchema.safeParse({ matches: -1, authors: [] }).success).toBe(false);
-    expect(entryFacetsSchema.safeParse({ matches: 1.5, authors: [] }).success).toBe(false);
+    expect(entryCountSchema.safeParse({ matches: -1 }).success).toBe(false);
+    expect(entryCountSchema.safeParse({ matches: 1.5 }).success).toBe(false);
+  });
+});
+
+describe('length bounds that keep one tenant from taxing the shared process', () => {
+  const many = (n: number, prefix: string) =>
+    Array.from({ length: n }, (_, i) => `${prefix}${String(i)}`);
+
+  it('caps a book’s categories and payment modes', () => {
+    // Unbounded, one PATCH stores tens of thousands of labels inside the 1 MB body limit, and every
+    // later read of that book re-serialises all of them on the process every family shares.
+    expect(
+      updateBookInputSchema.safeParse({ categories: many(MAX_BOOK_LABELS, 'c') }).success,
+    ).toBe(true);
+    expect(
+      updateBookInputSchema.safeParse({ categories: many(MAX_BOOK_LABELS + 1, 'c') }).success,
+    ).toBe(false);
+    expect(
+      updateBookInputSchema.safeParse({ paymentModes: many(MAX_BOOK_LABELS + 1, 'm') }).success,
+    ).toBe(false);
+  });
+
+  it('caps custom fields on the create path too, not only the update path', () => {
+    // The bound lives on the base schema precisely so both inputs inherit it — capping only the
+    // update would leave the identical hole open one route over.
+    const fields = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: `507f1f77bcf86cd7994${String(i).padStart(5, '0')}`,
+        name: `f${String(i)}`,
+        type: 'text' as const,
+      }));
+
+    expect(
+      updateBookInputSchema.safeParse({ customFields: fields(MAX_CUSTOM_FIELDS) }).success,
+    ).toBe(true);
+    expect(
+      updateBookInputSchema.safeParse({ customFields: fields(MAX_CUSTOM_FIELDS + 1) }).success,
+    ).toBe(false);
+    expect(
+      createBookInputSchema.safeParse({
+        name: 'Household',
+        tint: '#B4472C',
+        opening: 0,
+        categories: ['Groceries'],
+        paymentModes: ['UPI'],
+        customFields: fields(MAX_CUSTOM_FIELDS + 1),
+        useCategory: true,
+        useMode: true,
+        useAttach: false,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('caps how many customValues one entry may carry', () => {
+    // The hole the value-length bound left open: 20,000 booleans carry no long strings and still
+    // make one limit=100 page a ~64 MB response whose every key runs the objectId regex.
+    const values = (n: number) =>
+      Object.fromEntries(
+        Array.from({ length: n }, (_, i) => [
+          `507f1f77bcf86cd7994${String(i).padStart(5, '0')}`,
+          true,
+        ]),
+      );
+
+    expect(
+      createEntryInputSchema.safeParse({
+        type: 'out',
+        amount: 100,
+        customValues: values(MAX_CUSTOM_FIELDS),
+      }).success,
+    ).toBe(true);
+    expect(
+      createEntryInputSchema.safeParse({
+        type: 'out',
+        amount: 100,
+        customValues: values(MAX_CUSTOM_FIELDS + 1),
+      }).success,
+    ).toBe(false);
   });
 });
 
