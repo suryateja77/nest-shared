@@ -85,11 +85,27 @@ const bookBaseSchema = z
       .array(customFieldSchema)
       .refine((fields) => isUnique(fields.map((field) => field.id)), 'Field ids must be unique'),
     /**
-     * Entry-field toggles from [SCR-07]. [OVL-08] reads these to decide which sections of the entry
-     * sheet render at all, so an entry may carry no category or payment mode by design.
+     * Entry-field toggles from [SCR-07]. [OVL-08] states the rule for these two directly —
+     * *"category and mode sections appear only if the book enables those fields"* — so an entry may
+     * carry no category or payment mode by design.
      */
     useCategory: z.boolean(),
     useMode: z.boolean(),
+    /**
+     * **What this toggle *does* is not settled, and nothing here should be read as deciding it.**
+     *
+     * [LOG-01] names it `useAttach` and groups it on one line with the two above, which reads as a
+     * third visibility toggle. But [SCR-07] labels the switch "**Require** attachment", the
+     * prototype calls the field `requireAttach` and hints `ON ENTRIES ABOVE ₹10,000`, and
+     * [OVL-08]'s rules sentence pointedly covers category and mode only. Those describe a
+     * conditional *validation* rule, not a show/hide gate — a different control and a different
+     * server check.
+     *
+     * Moot today: [GAP-4] refuses every attachment outright (`entries/entryRules.ts`), so the flag
+     * has no live effect either way, and [SCR-07] stores it without acting on it. The decision
+     * belongs with whoever builds [GAP-4]; the field name follows [LOG-01] because that is the
+     * naming authority, and the name is not the answer.
+     */
     useAttach: z.boolean(),
   })
   .merge(timestampsSchema);
@@ -174,6 +190,23 @@ export const updateBookInputSchema = bookBaseSchema
     name: true,
     categories: true,
     paymentModes: true,
+    /**
+     * A **full replacement** of the array, with `id` still required on every entry — which is what
+     * makes the three edits `[SCR-07]` offers expressible: a kept field carries its id, a removed
+     * one is simply absent, and a new one arrives with an id the *client* minted.
+     *
+     * **Client-minted ids are the deliberate convention here, matching `createBookInputSchema`**,
+     * where `customFieldSchema.id` is likewise required and `routes/accounts.ts` writes it through.
+     * Two authority models for one nested type would be worse than either: whoever builds against
+     * this would have to know which route they were on, with nothing in the types to tell them.
+     *
+     * It is also safe, for the reason the create path gives — an id means nothing outside its own
+     * book. `bookBaseSchema` refuses duplicates within one, and `entryRules` resolves an entry's
+     * `customValues` keys against that book's own fields, so a collision across books is inert. The
+     * caller is already rewriting this array wholesale, so choosing an opaque key inside it grants
+     * no authority they did not already have — unlike `accountId`, `createdBy` or `bookId`, which
+     * name a resource the server must authorize and are omitted everywhere for that reason.
+     */
     customFields: true,
     useCategory: true,
     useMode: true,

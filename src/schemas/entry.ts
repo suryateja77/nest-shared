@@ -6,7 +6,7 @@ import {
   timeOfDayString,
   timestampsSchema,
 } from './common.js';
-import { paginated, paginationQuerySchema } from './http.js';
+import { paginated, paginationQuerySchema, queryList } from './http.js';
 
 export const entryTypeSchema = z.enum(['in', 'out']);
 export type EntryType = z.infer<typeof entryTypeSchema>;
@@ -100,17 +100,85 @@ export const updateEntryInputSchema = createEntryInputSchema.partial();
 export type UpdateEntryInput = z.infer<typeof updateEntryInputSchema>;
 
 /**
+ * [OVL-04]'s **DATE RANGE** chips, verbatim from the prototype's `RANGES`
+ * (`ANY DATE`, `TODAY`, `LAST 7 DAYS`, `LAST 30 DAYS`, `THIS MONTH`).
+ *
+ * **A token, resolved by the server, rather than a `from`/`to` pair resolved by the client.**
+ * `Entry.date` is a wall-clock `YYYY-MM-DD` stamped in the service's `APP_TIMEZONE`, so a range
+ * over it is only correct when computed in that same zone. A browser in another zone asking for
+ * `TODAY` would resolve its own calendar day and miss entries stamped either side of the boundary —
+ * including, at 02:00 IST from a UTC browser, the one just added.
+ *
+ * This is deliberately *not* the convention `booksQuerySchema` uses for `month`, where the client
+ * names the month. That is a different question: there the client picks *which* month and the
+ * server does an arithmetic range, whereas here the client would have to answer "what is today",
+ * which only the stamping zone can.
+ */
+export const entryDateRangeSchema = z.enum(['all', 'today', '7d', '30d', 'month']);
+export type EntryDateRange = z.infer<typeof entryDateRangeSchema>;
+
+/**
+ * [OVL-04]'s filter set — the prototype's
+ * `{ type, range, cats: [], modes: [], who: [] }`, and its `matches()` predicate is the semantics:
+ * every dimension is ANDed, and each list is an OR within itself ("PICK ANY").
+ *
+ * **`type` absent is the prototype's `'all'`.** An explicit `'all'` member would make two values
+ * mean the same thing on the wire, and the ALL chip is a *cleared* filter rather than a third
+ * direction — `fCount` counts it as zero.
+ *
+ * Applied in the query, never after the fetch. The ledger is cursor-paged, so filtering a loaded
+ * page would report "Nothing matches" while matching entries sat unloaded on page two — and
+ * `nest-authz` requires list scoping to happen in the query regardless.
+ */
+export const entryFilterQuerySchema = z.object({
+  type: entryTypeSchema.optional(),
+  range: entryDateRangeSchema.default('all'),
+  /** Free-text labels off the book's own lists, so bounded the same way `uniqueLabels` bounds them. */
+  categories: queryList(z.string().min(1).max(40)),
+  paymentModes: queryList(z.string().min(1).max(40)),
+  /** [OVL-04]'s **ADDED BY**. `Entry.createdBy`, so ids — the prototype's `who` is a name only because it has no user records. */
+  createdBy: queryList(objectId),
+});
+export type EntryFilterQuery = z.infer<typeof entryFilterQuerySchema>;
+
+/**
  * `GET /books/:bookId/entries` — the ledger ([SCR-06]).
  *
- * Ordered `date desc, time desc, id desc`, newest first, which is both what the screen renders and
- * what makes the running balance computable client-side: any row's balance is the book balance
- * minus everything newer, and everything newer is already loaded by the time you have scrolled to
- * it ([LOG-05]).
+ * Ordered `date desc, time desc, id desc`, newest first, which is what the screen renders.
  *
- * Filters ([OVL-04]) are not part of this contract yet — they are excluded from the first slice.
+ * Newest-first also lets the client derive each row's running balance from the book balance
+ * ([LOG-05]) — but **only while unfiltered**: that derivation is "book balance minus everything
+ * newer", and under a filter the rows are a subset, so everything newer is no longer all loaded.
+ * `[SCR-06]` item 7 makes the running-balance column conditional for exactly this kind of reason;
+ * see `LedgerScreen` for where it is dropped.
  */
-export const entriesQuerySchema = paginationQuerySchema;
+export const entriesQuerySchema = paginationQuerySchema.extend(entryFilterQuerySchema.shape);
 export type EntriesQuery = z.infer<typeof entriesQuerySchema>;
+
+/**
+ * `GET /books/:bookId/entries/facets` — the two figures [OVL-04] needs that the page cannot give it.
+ *
+ * The sheet edits a **draft** copy of the filters and only applies it on confirm (`fDraft`), so its
+ * "Show 12 entries" button describes a filter the ledger is not currently showing. That count
+ * cannot come from the entries page, which is both paginated and fetched under the *applied*
+ * filters.
+ */
+export const entryFacetsSchema = z.object({
+  /** How many entries match the filters sent with **this** request — the prototype's `previewCount`. */
+  matches: z.number().int().nonnegative(),
+  /**
+   * Distinct `createdBy` over the **whole book**, deliberately ignoring the request's filters.
+   *
+   * The prototype derives its ADDED BY chips the same way (`Object.keys(book.entries.reduce(...))`)
+   * — from who has actually written in this book, not from who *could*. Filtering this list by the
+   * draft would make chips vanish as soon as one was picked.
+   *
+   * Not `book.members` either: that is visibility ([LOG-17]), and the account's creator can write in
+   * a book without appearing in it, so a members-derived list would omit a real author.
+   */
+  authors: z.array(objectId),
+});
+export type EntryFacets = z.infer<typeof entryFacetsSchema>;
 
 /** `{ items, nextCursor }` of entries. */
 export const entriesPageSchema = paginated(entrySchema);

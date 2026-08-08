@@ -84,6 +84,39 @@ export const paginationQuerySchema = z.object({
 export type PaginationQuery = z.infer<typeof paginationQuerySchema>;
 
 /**
+ * How many values one repeatable filter parameter may carry.
+ *
+ * A bound rather than none, because each list becomes a Mongo `$in`: unbounded, a single request
+ * could send tens of thousands of values and turn one cheap index seek into a scan the server pays
+ * for. Fifty is far above anything the design can produce — `[OVL-04]`'s chips are drawn from one
+ * book's categories, its payment modes, and the account's members, and
+ * `MAX_INVITES_PER_ACCOUNT` already caps the last of those at 20.
+ */
+export const MAX_QUERY_LIST_VALUES = 50;
+
+/**
+ * A **repeatable** query parameter — `?categories=Food&categories=Rent`.
+ *
+ * Fastify's querystring parser yields an array for a repeated key and a bare *string* for a single
+ * one, so a plain `z.array(...)` would accept `?categories=Food&categories=Rent` and reject
+ * `?categories=Food` — a filter that only works once you have picked two of something. The
+ * preprocess normalises all three arrivals (absent, one, many) to an array.
+ *
+ * Repeated keys rather than a delimited single value: category and payment-mode labels are free
+ * text typed on `[SCR-07]`, so any separator worth choosing — comma included — is a character a
+ * user may legitimately put inside a label.
+ *
+ * Absent becomes `[]` rather than `undefined`, so the service branches on `length` alone and
+ * "filter not sent" and "filter cleared" cannot diverge into two code paths.
+ */
+export function queryList<T extends z.ZodType>(item: T, max: number = MAX_QUERY_LIST_VALUES) {
+  return z.preprocess(
+    (value) => (value === undefined ? [] : Array.isArray(value) ? value : [value]),
+    z.array(item).max(max),
+  );
+}
+
+/**
  * Wraps an item schema into the list envelope.
  *
  * `nextCursor` is `null` on the last page — explicitly null rather than absent, so an exhausted

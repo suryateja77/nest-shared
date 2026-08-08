@@ -18,7 +18,14 @@ import {
   customFieldTypeSchema,
   updateBookInputSchema,
 } from './book.js';
-import { createEntryInputSchema, entrySchema, updateEntryInputSchema } from './entry.js';
+import {
+  createEntryInputSchema,
+  entriesQuerySchema,
+  entryFacetsSchema,
+  entrySchema,
+  updateEntryInputSchema,
+} from './entry.js';
+import { MAX_QUERY_LIST_VALUES } from './http.js';
 import { createDueInputSchema, dueSchema } from './due.js';
 import {
   createReminderInputSchema,
@@ -713,5 +720,109 @@ describe('updateProfileDetailsInputSchema', () => {
     expect(parsed).not.toHaveProperty('phone');
     expect(parsed).not.toHaveProperty('avatarUrl');
     expect(parsed).toEqual({ name: 'Ananya Sharma' });
+  });
+});
+
+describe('[OVL-04] entriesQuerySchema — the ledger filters', () => {
+  it('treats one, many and no values for a repeatable filter alike', () => {
+    // The whole reason `queryList` preprocesses: Fastify hands back a bare string for a single
+    // occurrence and an array for a repeated one. Without normalisation `?categories=Food` fails
+    // while `?categories=Food&categories=Rent` passes — a filter that only works from two chips up.
+    expect(entriesQuerySchema.parse({ categories: 'Food' }).categories).toEqual(['Food']);
+    expect(entriesQuerySchema.parse({ categories: ['Food', 'Rent'] }).categories).toEqual([
+      'Food',
+      'Rent',
+    ]);
+    expect(entriesQuerySchema.parse({}).categories).toEqual([]);
+  });
+
+  it('defaults every filter to "no filter", so an unfiltered ledger sends nothing', () => {
+    const parsed = entriesQuerySchema.parse({});
+    expect(parsed.range).toBe('all');
+    expect(parsed.type).toBeUndefined();
+    expect(parsed).toMatchObject({ categories: [], paymentModes: [], createdBy: [] });
+  });
+
+  it('has no "all" member on type — the ALL chip is a cleared filter, not a third direction', () => {
+    // Two wire values meaning the same thing is how `fCount` starts disagreeing with the chips.
+    expect(entriesQuerySchema.safeParse({ type: 'all' }).success).toBe(false);
+    expect(entriesQuerySchema.parse({ type: 'in' }).type).toBe('in');
+  });
+
+  it('bounds each list, so one request cannot turn an index seek into a scan', () => {
+    const tooMany = Array.from({ length: MAX_QUERY_LIST_VALUES + 1 }, (_, i) => `c${String(i)}`);
+    expect(entriesQuerySchema.safeParse({ categories: tooMany }).success).toBe(false);
+  });
+
+  it('requires ADDED BY to be ids, never names', () => {
+    // [LOG-01] writes `who` as a member name only because the prototype has no user records.
+    expect(entriesQuerySchema.safeParse({ createdBy: 'Ananya' }).success).toBe(false);
+    expect(entriesQuerySchema.parse({ createdBy: OID }).createdBy).toEqual([OID]);
+  });
+
+  it('keeps the pagination contract it extends', () => {
+    expect(entriesQuerySchema.parse({}).limit).toBe(50);
+    expect(entriesQuerySchema.parse({ cursor: 'abc' }).cursor).toBe('abc');
+  });
+});
+
+describe('entryFacetsSchema', () => {
+  it('carries the draft match count and the book-wide author list', () => {
+    expect(entryFacetsSchema.parse({ matches: 12, authors: [OID] })).toEqual({
+      matches: 12,
+      authors: [OID],
+    });
+  });
+
+  it('rejects a negative or fractional match count', () => {
+    expect(entryFacetsSchema.safeParse({ matches: -1, authors: [] }).success).toBe(false);
+    expect(entryFacetsSchema.safeParse({ matches: 1.5, authors: [] }).success).toBe(false);
+  });
+});
+
+describe('[SCR-07] updateBookInputSchema — custom fields', () => {
+  const OTHER = '507f1f77bcf86cd799439014';
+  const field = { id: OID, name: 'Vendor', type: 'text' as const };
+
+  it('requires an id on every field, exactly as createBookInputSchema does', () => {
+    // One authority model for one nested type: both routes take the id from the client. Making it
+    // optional here would mean whoever builds [SCR-07]'s field editor has to know which route they
+    // are on, with nothing in the types to tell them.
+    expect(updateBookInputSchema.parse({ customFields: [field] }).customFields).toEqual([field]);
+    expect(
+      updateBookInputSchema.safeParse({ customFields: [{ name: 'Vendor', type: 'text' }] }).success,
+    ).toBe(false);
+  });
+
+  it('accepts several fields with distinct ids', () => {
+    expect(
+      updateBookInputSchema.safeParse({
+        customFields: [field, { id: OTHER, name: 'Warranty till', type: 'text' }],
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects two fields sharing one id', () => {
+    // Entry.customValues keys off these, so a duplicate id makes one entry's value ambiguous.
+    expect(
+      updateBookInputSchema.safeParse({
+        customFields: [field, { id: OID, name: 'Reference', type: 'text' }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('still refuses everything [SCR-07] does not edit', () => {
+    // `opening` is the sharp one: it moves every figure [LOG-05] derives, with no entry to point
+    // at and no undo. See the allowlist's own comment.
+    const parsed = updateBookInputSchema.parse({
+      name: 'Household',
+      opening: 999,
+      accountId: OID,
+      createdBy: OID,
+      members: [OID],
+      tint: '#b4472c',
+      sub: 'anything',
+    });
+    expect(parsed).toEqual({ name: 'Household' });
   });
 });
