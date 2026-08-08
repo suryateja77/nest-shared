@@ -12,6 +12,7 @@ import {
 } from './common.js';
 import { accountSchema, accountSummarySchema, createAccountInputSchema } from './account.js';
 import {
+  bookBaseSchema,
   bookSchema,
   bookStatsSchema,
   createBookInputSchema,
@@ -103,6 +104,8 @@ describe('moneyAmount', () => {
 });
 
 describe('createBookInputSchema', () => {
+  /** A second, genuinely different id — reusing `OID` would make the negative cases pass by accident. */
+  const OTHER_MEMBER = '507f1f77bcf86cd799439013';
   const validBook = {
     name: 'Household',
     sub: 'Runs since Jan 2026',
@@ -164,9 +167,41 @@ describe('createBookInputSchema', () => {
     ).toBe(false);
   });
 
-  it('is derivable — the uniqueness checks sit on the arrays, not the object', () => {
-    // zod refuses .pick()/.omit() on an object carrying refinements; bookSchema must stay derivable.
-    expect(() => bookSchema.omit({ id: true })).not.toThrow();
+  it('is derivable from the base — the uniqueness checks sit on the arrays, not the object', () => {
+    // zod refuses .pick()/.omit() on an object carrying refinements, so the derivable shape has to
+    // be the *base*: `bookSchema` itself now carries the creator-is-a-member refinement, and every
+    // input and response schema is cut from `bookBaseSchema` for exactly that reason.
+    expect(() => bookBaseSchema.omit({ id: true })).not.toThrow();
+    // The array-level uniqueness checks are what this test was written to pin, and they still do
+    // not block derivation — they sit on `categories`/`paymentModes`/`customFields`, not the object.
+    expect(() => bookBaseSchema.omit({ categories: true, customFields: true })).not.toThrow();
+  });
+
+  it('refuses a book whose creator is not one of its members', () => {
+    // [OVL-09] locks the creator's own row on ("YOU · ALWAYS HAS ACCESS"). Without this, [LOG-17]
+    // leaves a creator who can administer a book (Move/Archive/Delete) but cannot see it.
+    const base = {
+      ...validBook,
+      id: OID,
+      accountId: OID,
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-01T00:00:00.000Z',
+    };
+    expect(bookSchema.safeParse({ ...base, createdBy: OID, members: [OID] }).success).toBe(true);
+    expect(
+      bookSchema.safeParse({ ...base, createdBy: OID, members: [OTHER_MEMBER] }).success,
+    ).toBe(false);
+    expect(bookSchema.safeParse({ ...base, createdBy: OID, members: [] }).success).toBe(false);
+  });
+
+  it('keeps members out of the update input — bulk membership edits are undesigned', () => {
+    // The only two designed mutations are [OVL-09]'s initial set and a self-only Leave book
+    // ([OVL-17]); adding a member back is [GAP-2]. A general update must not express either.
+    expect(updateBookInputSchema.parse({ members: [OID] })).not.toHaveProperty('members');
+  });
+
+  it('defaults members to empty, since [OVL-09] renders no picker in a one-member account', () => {
+    expect(createBookInputSchema.parse(validBook).members).toEqual([]);
   });
 });
 

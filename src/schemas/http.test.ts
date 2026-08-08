@@ -95,6 +95,8 @@ describe('bookSummarySchema — derived, never stored [LOG-05]', () => {
     accountId: OID,
     name: 'Household',
     tint: '#B4472C',
+    /** `[LOG-17]`'s `isBookCreator` — `[SCR-07]` cannot render its admin rows without it. */
+    createdBy: OID,
     opening: 60000,
     categories: ['Groceries'],
     paymentModes: ['UPI'],
