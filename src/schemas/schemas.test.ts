@@ -10,7 +10,14 @@ import {
   signedMoneyTotal,
   timeOfDayString,
 } from './common.js';
-import { accountSchema, accountSummarySchema, createAccountInputSchema } from './account.js';
+import {
+  accountManagementSchema,
+  accountSchema,
+  accountSummarySchema,
+  createAccountInputSchema,
+  MAX_INVITES_PER_ACCOUNT,
+  updateAccountInputSchema,
+} from './account.js';
 import {
   bookSchema,
   bookStatsSchema,
@@ -479,6 +486,30 @@ describe('permissions', () => {
     expect(parsed.name).toBe('PG Rent');
   });
 
+  it('trims the account name on rename too, not only on create', () => {
+    // The same [OVL-17] gate as the test above, one step later. `updateAccountInputSchema` derives
+    // by `.pick()`, which carried accountBaseSchema's bare .min(1) through — so before the override
+    // the trim guarantee held only until the first rename, which is the whole point of having it.
+    expect(updateAccountInputSchema.safeParse({ name: '   ' }).success).toBe(false);
+    expect(updateAccountInputSchema.safeParse({ name: '\t\n ' }).success).toBe(false);
+
+    expect(updateAccountInputSchema.parse({ name: '  Sharma Family  ' }).name).toBe('Sharma Family');
+
+    // Still a PATCH: every field stays optional, and an empty patch is not an error.
+    expect(updateAccountInputSchema.safeParse({}).success).toBe(true);
+    expect(updateAccountInputSchema.safeParse({ initial: 'S' }).success).toBe(true);
+  });
+
+  it('refuses membership changes through the account update route', () => {
+    // [SCR-08] routes role changes and removals through their own endpoints, which carry their own
+    // authorization. A `members` key here would be a second, ungated path to the same state.
+    const parsed = updateAccountInputSchema.parse({
+      name: 'Sharma Family',
+      members: [{ userId: OID, name: 'Rohit', contact: 'r@example.com', role: 'ADMIN' }],
+    } as never);
+    expect(parsed).not.toHaveProperty('members');
+  });
+
   it('requires an invite contact to be a phone number or an email', () => {
     // contactKeyOf strips non-digits when it sees no '@', so free text normalises to a key that can
     // match a real person while `contact` — which [SCR-08] renders verbatim — keeps the whole string.
@@ -489,7 +520,17 @@ describe('permissions', () => {
     expect(invite('+91 98450 22118')).toBe(true);
     expect(invite('someone@example.com')).toBe(true);
 
+    expect(invite('+919845022118')).toBe(true);
+    expect(invite('09845022118')).toBe(true);
+
     expect(invite('7')).toBe(false);
+    /**
+     * A trailing typo must not pass. `contactKeyOf` keeps the **last** ten digits, so an eleven-digit
+     * value silently re-addresses the invite to a different subscriber — `98450221180` resolves to
+     * `8450221180`. The recipient has no way to notice: `myInviteSchema` omits `contact`.
+     */
+    expect(invite('98450221180')).toBe(false);
+    expect(invite('9845022118 0')).toBe(false);
     expect(invite('9876543210 — overdue, pay at nest-billing.example')).toBe(false);
     expect(invite('not-an-email@')).toBe(false);
   });
@@ -583,6 +624,92 @@ describe('accountSummarySchema', () => {
     const withoutStats: Record<string, unknown> = { ...summary };
     delete withoutStats.stats;
     expect(accountSummarySchema.safeParse(withoutStats).success).toBe(false);
+  });
+});
+
+describe('[SCR-08] accountManagementSchema', () => {
+  const OTHER = '507f1f77bcf86cd799439012';
+  const management = {
+    id: OID,
+    name: 'Sharma Family',
+    kind: 'SHARED' as const,
+    initial: 'S',
+    createdBy: OID,
+    members: [
+      { userId: OID, name: 'Ananya Sharma', contact: 'ananya@gmail.com', role: 'ADMIN' as const },
+      { userId: OTHER, name: 'Rohit Sharma', contact: '9845022118', role: 'EDITOR' as const },
+    ],
+    permissions: ROLE_PERMISSION_SEED,
+    myCapabilities: ROLE_PERMISSION_SEED.ADMIN,
+    invites: [
+      {
+        id: OID,
+        contact: 'meera@example.com',
+        name: 'Meera Iyer',
+        role: 'VIEWER' as const,
+        status: 'pending' as const,
+      },
+    ],
+    facts: { bookCount: 3, entryCount: 41 },
+    createdAt: '2026-08-05T00:00:00.000Z',
+    updatedAt: '2026-08-05T00:00:00.000Z',
+  };
+
+  it('accepts the Manage-account payload', () => {
+    expect(accountManagementSchema.safeParse(management).success).toBe(true);
+  });
+
+  it('carries every member contact and the editable matrix — the one screen that may', () => {
+    // The inverse of accountSummarySchema's two withholding tests. [SCR-08] is the only screen the
+    // frozen design draws a contact on, and the only one that edits the matrix.
+    const parsed = accountManagementSchema.parse(management);
+    expect(parsed.members[0]).toHaveProperty('contact', 'ananya@gmail.com');
+    expect(rolePermissionsSchema.safeParse(parsed.permissions).success).toBe(true);
+  });
+
+  it('still resolves the caller’s own capabilities server-side', () => {
+    // nest-authz holds even here: the client now *has* the matrix, so the temptation to find itself
+    // in members[] and index it is real. myCapabilities is what makes that unnecessary.
+    expect(permissionsSchema.safeParse(management.myCapabilities).success).toBe(true);
+    const withoutMine: Record<string, unknown> = { ...management };
+    delete withoutMine.myCapabilities;
+    expect(accountManagementSchema.safeParse(withoutMine).success).toBe(false);
+  });
+
+  it('keeps the creator-is-a-member invariant across the wire', () => {
+    // A response is still a state. The floor of administrability should not go unchecked just
+    // because it was serialised.
+    const orphaned = {
+      ...management,
+      members: [management.members[1]],
+    };
+    expect(accountManagementSchema.safeParse(orphaned).success).toBe(false);
+  });
+
+  it('requires [OVL-17]’s facts, because the sheet must never guess a count', () => {
+    // [OVL-17]: "Counts are computed, never guessed." An absent facts object would let the sheet
+    // render a blank BOOKS DELETED row next to an irreversible button.
+    const withoutFacts: Record<string, unknown> = { ...management };
+    delete withoutFacts.facts;
+    expect(accountManagementSchema.safeParse(withoutFacts).success).toBe(false);
+
+    expect(
+      accountManagementSchema.safeParse({ ...management, facts: { bookCount: -1, entryCount: 0 } })
+        .success,
+    ).toBe(false);
+  });
+
+  it('carries a revoked invite rather than dropping it, so undo is a status flip', () => {
+    const revoked = {
+      ...management,
+      invites: [{ ...management.invites[0], status: 'revoked' as const }],
+    };
+    expect(accountManagementSchema.safeParse(revoked).success).toBe(true);
+  });
+
+  it('caps the invite list at family scale', () => {
+    const many = Array.from({ length: MAX_INVITES_PER_ACCOUNT + 1 }, () => management.invites[0]);
+    expect(accountManagementSchema.safeParse({ ...management, invites: many }).success).toBe(false);
   });
 });
 

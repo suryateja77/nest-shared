@@ -57,9 +57,20 @@ export const createInviteInputSchema = inviteSchema.pick({ contact: true, role: 
    * delivery channel for arbitrary text.
    *
    * Ten digits is the Indian mobile length the design assumes throughout (`[SCR-02]`'s placeholder
-   * is `98450 22118`), and it is a floor rather than an exact match so a `+91` or `0` prefix still
-   * passes. This validates *shape*, not reachability — nothing here proves the person exists, which
-   * is deliberate: `[LOG-12]` forbids the lookup that would.
+   * is `98450 22118`). This validates *shape*, not reachability — nothing here proves the person exists,
+   * which is deliberate: `[LOG-12]` forbids the lookup that would.
+   *
+   * **The normalised key must be exactly ten digits, not merely at least ten.** This used to be a floor,
+   * so that a `+91` or `0` prefix still passed — but the server's `contactKeyOf` keeps the **last** ten
+   * digits, and a security audit found what those two rules do together: a trailing typo silently
+   * re-addresses the invite to a different subscriber. `"9845022118"` and `"98450221180"` both passed,
+   * and the second resolves to key `8450221180` — a stranger, who then sees *"Ananya invited you to
+   * Sharma Family"* with no contact on the row to tell them it is not for them (`myInviteSchema` omits
+   * `contact`), while `[SCR-08]` shows the inviter their invite was accepted. One mistyped character was
+   * a cross-tenant membership grant, confirmed as success on both screens.
+   *
+   * So the prefixes are consumed explicitly instead: one optional `+91`, `91` or `0`, then exactly ten
+   * digits. Same key space `phoneIdentifierSchema` already requires exactly ten of.
    */
   contact: z
     .string()
@@ -77,7 +88,9 @@ export const createInviteInputSchema = inviteSchema.pick({ contact: true, role: 
              * `contact` — the value `[SCR-08]` renders verbatim — keeps the attacker's sentence.
              * Separators are allowed because `[SCR-02]`'s own placeholder is `98450 22118`.
              */
-            /^\+?[\d\s\-()]+$/.test(value) && value.replace(/\D/g, '').length >= 10,
+            /^\+?[\d\s\-()]+$/.test(value) &&
+            /** One optional country/trunk prefix, then exactly the ten digits `contactKeyOf` will keep. */
+            /^(?:91|0)?\d{10}$/.test(value.replace(/\D/g, '')),
       'Enter a valid phone number or email address',
     ),
 });

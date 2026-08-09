@@ -21,6 +21,21 @@ import { z } from 'zod';
 export const roleSchema = z.enum(['ADMIN', 'EDITOR', 'VIEWER', 'TEEN']);
 export type Role = z.infer<typeof roleSchema>;
 
+/**
+ * The body of both role-assignment endpoints — a member's role and a pending invite's.
+ *
+ * **One schema, because `[OVL-16]` is one component.** The role sheet *"serves two callers, keyed by
+ * `state.roleSheet = { kind: 'member' | 'invite', key }"*, and both write the same four-value set to
+ * the same field name. Two schemas would be two names for one shape, which the note on `roleSchema`
+ * above already argues against.
+ *
+ * What this schema cannot express, and which therefore has to live in the two handlers: `[LOG-16]`'s
+ * *"a user can never change their own role"* and its instruction that handlers re-check `isCreator`
+ * rather than trusting a hidden control. Neither is a property of the body.
+ */
+export const roleAssignmentInputSchema = z.object({ role: roleSchema });
+export type RoleAssignmentInput = z.infer<typeof roleAssignmentInputSchema>;
+
 /** The six per-role capabilities from [LOG-01]'s role/capability matrix. */
 export const permissionsSchema = z.object({
   viewEntries: z.boolean(),

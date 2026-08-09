@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { bookStatsSchema } from './book.js';
 import { objectId, timestampsSchema } from './common.js';
-import { createInviteInputSchema } from './invite.js';
+import { accountInviteSchema, createInviteInputSchema } from './invite.js';
 import { permissionsSchema, roleSchema, rolePermissionsSchema } from './role.js';
 
 export const accountKindSchema = z.enum(['SHARED', 'PERSONAL']);
@@ -157,7 +157,22 @@ export type CreateAccountInput = z.infer<typeof createAccountInputSchema>;
  */
 export const updateAccountInputSchema = accountBaseSchema
   .pick({ name: true, initial: true, permissions: true })
-  .partial();
+  .partial()
+  .extend({
+    /**
+     * **Trimmed here too, for the same reason `createAccountInputSchema` trims.**
+     *
+     * `.pick()` carries `accountBaseSchema`'s bare `.min(1)` through unchanged, so before this
+     * override a rename to `"   "` parsed successfully and stored an all-whitespace name. That is
+     * the precise state `createAccountInputSchema`'s comment above exists to prevent: `[OVL-17]`
+     * unlocks Delete on `dangerText.trim() === account.name.trim()`, so a whitespace name makes an
+     * **empty** typed confirmation satisfy the gate that exists to slow a destructive act down.
+     *
+     * Create was trimmed and update was not, which meant the guarantee held only until the first
+     * rename. Stays `.optional()` because the whole input is a `PATCH`.
+     */
+    name: z.string().trim().min(1).max(80).optional(),
+  });
 export type UpdateAccountInput = z.infer<typeof updateAccountInputSchema>;
 
 /**
@@ -216,3 +231,55 @@ export const accountSummarySchema = accountBaseSchema
     bookCount: z.number().int().nonnegative(),
   });
 export type AccountSummary = z.infer<typeof accountSummarySchema>;
+
+/**
+ * `GET /accounts/:accountId` — everything `[SCR-08]` **Manage account** renders, in one payload.
+ *
+ * Deliberately **not** `accountSummarySchema`. `[SCR-08]` is the one screen the frozen design draws a
+ * member's `contact` on, and the one screen that edits the capability matrix, so both are present
+ * here and withheld from the list route. Read this schema's presence as the licence for that
+ * disclosure and nothing wider: reach for `accountSummarySchema` anywhere else.
+ *
+ * **Membership is the gate, not a capability.** `[SCR-08]` has two variants keyed on `createdBy`
+ * (`[LOG-16]`), and the read-only one is open to every member — so this cannot be gated on
+ * `manageMembers` (which `[LOG-16]` deliberately overrides) nor on `viewEntries` (which would tie a
+ * members screen to entry rights). The caller still gets `myCapabilities`, resolved server-side, so
+ * the client never indexes the matrix to find its own rights even though it now holds the matrix.
+ *
+ * Built from `accountBaseSchema` rather than `accountSchema` because zod refuses `.extend()` on a
+ * refined schema; the creator-is-a-member invariant is re-applied below, since a response is still a
+ * state and the floor of administrability should not go unchecked just because it crossed a wire.
+ */
+export const accountManagementSchema = accountBaseSchema
+  .extend({
+    /** The caller's own six capabilities, already resolved against the matrix ([nest-authz]). */
+    myCapabilities: permissionsSchema,
+    /**
+     * `[SCR-08]` item 5's **PENDING INVITES** rows and their `n WAITING` count. Only pending and
+     * revoked invites are the screen's business — an accepted one is a member row instead — but the
+     * status is carried rather than filtered so `[OVL-16]`'s revoke → undo round trip is a status
+     * flip the client can render, not a row that vanishes and reappears.
+     */
+    invites: z.array(accountInviteSchema).max(MAX_INVITES_PER_ACCOUNT),
+    /**
+     * `[OVL-17]`'s facts table, computed per request and **never stored** (`[LOG-05]`).
+     *
+     * **Both counts are per-viewer**, filtered through `[LOG-17]`'s `inBook` exactly as
+     * `GET /accounts` already filters `bookCount`. One pair of numbers therefore serves both danger
+     * modes correctly without a second field: the creator short-circuits `inBook` and sees every
+     * book, which is what `BOOKS DELETED` / `ENTRIES DELETED` mean, and a non-creator sees only their
+     * own, which is exactly what `BOOKS YOU LOSE` means.
+     *
+     * They are counts, not balances — `[OVL-17]` names no money, so no capability gate is needed and
+     * neither is nullable.
+     */
+    facts: z.object({
+      bookCount: z.number().int().nonnegative(),
+      entryCount: z.number().int().nonnegative(),
+    }),
+  })
+  .refine(
+    (account) => account.members.some((member) => member.userId === account.createdBy),
+    'An account’s creator must be one of its members',
+  );
+export type AccountManagement = z.infer<typeof accountManagementSchema>;
