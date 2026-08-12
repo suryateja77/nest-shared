@@ -371,10 +371,25 @@ export type BookStats = z.infer<typeof bookStatsSchema>;
  * without it. It discloses nothing new — every account member's id is already on `AccountSummary`.
  */
 export const bookSummarySchema = bookBaseSchema.omit({ members: true, perms: true }).extend({
-  stats: bookStatsSchema,
-  entryCount: z.number().int().nonnegative(),
-  /** `cin − cout` restricted to `month`. Signed, and a total rather than an entered amount. */
-  monthNet: signedMoneyTotal,
+  /**
+   * **`null` means withheld, never zero** — the caller's `viewEntries` is false *for this book*.
+   *
+   * The same argument `accountSummarySchema.stats` already carries, and `[GAP-2]` is what made it
+   * reachable here. While `viewEntries` was account-level, anyone who could list a book could read
+   * it, so a figure on the row disclosed nothing new. A per-book matrix breaks that: *"Ishaan may
+   * log his spending but must not see the renovation ledger"* is exactly the configuration the
+   * matrix exists to express, and `GET /accounts/:accountId/books` was still shipping that book's
+   * balance, entry count and month delta on the row.
+   *
+   * Nullable rather than omitted, because `[SCR-05]` has to *draw* the difference — a withheld
+   * balance is a real state with its own treatment, and `0` would render as a confident "nothing
+   * here" for a book that may hold a great deal.
+   */
+  stats: bookStatsSchema.nullable(),
+  entryCount: z.number().int().nonnegative().nullable(),
+  /** `cin − cout` restricted to `month`. Signed, a total rather than an entered amount, and
+   *  withheld with the rest when the caller may not read this book's entries. */
+  monthNet: signedMoneyTotal.nullable(),
   /** Echoed back so a client cannot misattribute a delta to the wrong month. */
   month: monthString,
   /**

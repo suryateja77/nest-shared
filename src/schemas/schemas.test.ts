@@ -21,6 +21,7 @@ import {
 import {
   bookSchema,
   bookStatsSchema,
+  bookSummarySchema,
   createBookInputSchema,
   customFieldTypeSchema,
   MAX_BOOK_LABELS,
@@ -1124,5 +1125,61 @@ describe('[SCR-07] updateBookInputSchema — custom fields', () => {
       sub: 'anything',
     });
     expect(parsed).toEqual({ name: 'Household' });
+  });
+});
+
+describe('bookSummarySchema — a withheld book is null, never zero [GAP-2]', () => {
+  const base = {
+    id: OID,
+    accountId: OID,
+    name: 'Renovation',
+    tint: '#B4472C',
+    createdBy: OID,
+    opening: 0,
+    categories: [],
+    paymentModes: [],
+    customFields: [],
+    useCategory: true,
+    useMode: true,
+    useAttach: false,
+    createdAt: '2026-07-01T00:00:00.000Z',
+    updatedAt: '2026-07-31T00:00:00.000Z',
+    month: '2026-07',
+    myCapabilities: {
+      viewEntries: false,
+      addEntries: true,
+      editAnyEntry: false,
+      deleteEntries: false,
+      manageMembers: false,
+      bookSettings: false,
+    },
+  };
+
+  it('accepts null figures for a caller whose per-book viewEntries is false', () => {
+    // The "log your spending, do not read the ledger" configuration the matrix exists to express.
+    expect(
+      bookSummarySchema.safeParse({ ...base, stats: null, entryCount: null, monthNet: null })
+        .success,
+    ).toBe(true);
+  });
+
+  it('still accepts real figures for a caller who may read the book', () => {
+    expect(
+      bookSummarySchema.safeParse({
+        ...base,
+        myCapabilities: { ...base.myCapabilities, viewEntries: true },
+        stats: { cin: 100, cout: 40, bal: 60 },
+        entryCount: 2,
+        monthNet: 60,
+      }).success,
+    ).toBe(true);
+  });
+
+  it('does not let the fields be omitted — withheld is a value, not an absence', () => {
+    // An omitted key would let a mapper forget to answer and have it read as "withheld", which is
+    // the failure mode `toBookSummary`'s required parameter is guarding against on the other side.
+    expect(bookSummarySchema.safeParse({ ...base, entryCount: null, monthNet: null }).success).toBe(
+      false,
+    );
   });
 });
