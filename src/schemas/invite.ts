@@ -10,7 +10,13 @@ import { roleSchema } from './role.js';
 export const inviteStatusSchema = z.enum(['pending', 'accepted', 'declined', 'revoked']);
 export type InviteStatus = z.infer<typeof inviteStatusSchema>;
 
-export const inviteSchema = z
+/**
+ * Module-private, for the reason `bookBaseSchema` and `accountBaseSchema` are: zod refuses
+ * `.pick()`/`.omit()` on an object carrying a refinement, and an exported invariant-free alias of
+ * the entity would let a caller parse an `Invite` that had skipped `bookIdAndNameAgree`. It exists
+ * only so the projections below can be cut from it.
+ */
+const inviteBaseSchema = z
   .object({
     id: objectId,
     accountId: objectId,
@@ -36,15 +42,52 @@ export const inviteSchema = z
      */
     role: roleSchema,
     status: inviteStatusSchema,
+    /**
+     * The book this invitation is *to*, or `null` for an invitation into the account itself.
+     *
+     * One entity for both, because they are the same object with the same lifecycle — addressed by
+     * contact, resolved through `[LOG-12]`, pending until accepted, declined or revoked — and
+     * `[SCR-04]`'s inbox renders them in one list. A parallel `BookInvite` would duplicate the
+     * contact normalisation, the status machine, the accept/decline routes and the inbox query, and
+     * every one of those is a place for the two to drift.
+     *
+     * **What accepting does differs entirely, and that is the point of the discriminator.** A `null`
+     * `bookId` writes an `Account.members` row, and the invitee gains every book in the account they
+     * are added to. A non-null one writes a single `kind: 'guest'` row on that book and grants
+     * nothing else — no account membership, no other book, no account balance.
+     *
+     * `accountId` stays populated either way: a book invitation still has to name the account for
+     * `[SCR-04]` to say *"…to Groceries in Sharma Family"*, and the resolver needs it to load the
+     * account whose matrix the book may still be inheriting.
+     */
+    bookId: objectId.nullable(),
+    /** The book's name, denormalised for `[SCR-04]`'s row. `null` exactly when `bookId` is. */
+    bookName: z.string().min(1).max(60).nullable(),
   })
   .merge(timestampsSchema);
+
+/**
+ * The two book fields are set together or not at all — the discriminator and its denormalised label
+ * cannot disagree. A row with a `bookId` and no `bookName` would render `[SCR-04]`'s sentence with a
+ * hole in it; a row with a `bookName` and no `bookId` would grant account membership while telling
+ * the invitee they were joining one book.
+ */
+const bookIdAndNameAgree = (invite: { bookId: string | null; bookName: string | null }): boolean =>
+  (invite.bookId === null) === (invite.bookName === null);
+const BOOK_FIELDS_AGREE =
+  'A book invitation carries both bookId and bookName, an account invitation neither';
+
+export const inviteSchema = inviteBaseSchema.refine(bookIdAndNameAgree, {
+  message: BOOK_FIELDS_AGREE,
+  path: ['bookName'],
+});
 export type Invite = z.infer<typeof inviteSchema>;
 
 /**
  * `role` is set by the inviter and is **not** re-accepted from the invitee on acceptance —
  * otherwise anyone could join as ADMIN. `name` is server-resolved, never client-supplied.
  */
-export const createInviteInputSchema = inviteSchema.pick({ contact: true, role: true }).extend({
+export const createInviteInputSchema = inviteBaseSchema.pick({ contact: true, role: true }).extend({
   /**
    * A contact must actually be a phone number or an email address.
    *
@@ -100,7 +143,7 @@ export type CreateInviteInput = z.infer<typeof createInviteInputSchema>;
  * An account's own pending-invite rows ([SCR-08]) — the `Invite` of [LOG-01]. Scoped to an account
  * the caller can already see, so it carries the contact.
  */
-export const accountInviteSchema = inviteSchema.pick({
+export const accountInviteSchema = inviteBaseSchema.pick({
   id: true,
   contact: true,
   name: true,
@@ -115,12 +158,33 @@ export type AccountInvite = z.infer<typeof accountInviteSchema>;
  * Deliberately without `contact`: the recipient already knows their own, and omitting it keeps the
  * projection minimal.
  */
-export const myInviteSchema = inviteSchema.pick({
+export const myInviteSchema = inviteBaseSchema.pick({
   id: true,
   accountId: true,
   accountName: true,
   inviterName: true,
   role: true,
   status: true,
+  /**
+   * Carried so `[SCR-04]`'s row can say which of the two invitations this is. The sentence the
+   * design specifies — *bold inviter*, *bold account name* — is ambiguous once book invitations
+   * exist: *"Rohit invited you to Sharma Family"* reads identically whether the invitee is about to
+   * gain the whole account or one book, and those grant very different access to a family's money.
+   * The recipient has to be able to tell before they press Accept.
+   */
+  bookId: true,
+  bookName: true,
 });
 export type MyInvite = z.infer<typeof myInviteSchema>;
+
+/**
+ * Inviting a guest to one book — `[OVL-06]`, transposed into `[SCR-07]`.
+ *
+ * Identical body to `createInviteInputSchema`, and deliberately a **separate named export** rather
+ * than a reuse: the two are validated by different resolvers against different authorities
+ * (`requireAccountCreator` for an account invitation, the book's own `createdBy` for this one), and
+ * the book is named by the route path, never by the body. Giving each route its own input type keeps
+ * that difference visible at every call site instead of resting on which URL happened to be used.
+ */
+export const createBookInviteInputSchema = createInviteInputSchema;
+export type CreateBookInviteInput = z.infer<typeof createBookInviteInputSchema>;

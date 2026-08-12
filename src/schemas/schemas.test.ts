@@ -196,14 +196,107 @@ describe('createBookInputSchema', () => {
       ...validBook,
       id: OID,
       accountId: OID,
+      /** Required on a stored book, nullable in meaning: null = inherit the account matrix. */
+      perms: null,
       createdAt: '2026-07-01T00:00:00.000Z',
       updatedAt: '2026-07-01T00:00:00.000Z',
     };
-    expect(bookSchema.safeParse({ ...base, createdBy: OID, members: [OID] }).success).toBe(true);
-    expect(bookSchema.safeParse({ ...base, createdBy: OID, members: [OTHER_MEMBER] }).success).toBe(
-      false,
+    const account = (userId: string) => ({ userId, role: null, kind: 'account' as const });
+
+    expect(bookSchema.safeParse({ ...base, createdBy: OID, members: [account(OID)] }).success).toBe(
+      true,
     );
+    expect(
+      bookSchema.safeParse({ ...base, createdBy: OID, members: [account(OTHER_MEMBER)] }).success,
+    ).toBe(false);
     expect(bookSchema.safeParse({ ...base, createdBy: OID, members: [] }).success).toBe(false);
+  });
+
+  it('inherits the account role and matrix until something overrides them', () => {
+    // `null` means *inherit, live* in both places — the whole of [GAP-2]'s design. A snapshot of the
+    // account role would let a demotion on [SCR-08] miss every book the member was already in.
+    const base = {
+      ...validBook,
+      id: OID,
+      accountId: OID,
+      /** Required on a stored book, nullable in meaning: null = inherit the account matrix. */
+      perms: null,
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-01T00:00:00.000Z',
+      createdBy: OID,
+    };
+
+    expect(
+      bookSchema.safeParse({
+        ...base,
+        members: [{ userId: OID, role: null, kind: 'account' }],
+        perms: null,
+      }).success,
+    ).toBe(true);
+
+    // An override on one row, and a detached matrix, are both legal.
+    expect(
+      bookSchema.safeParse({
+        ...base,
+        members: [
+          { userId: OID, role: null, kind: 'account' },
+          { userId: OTHER_MEMBER, role: 'VIEWER', kind: 'account' },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+
+  it('refuses a guest with no role — there is no account role for them to inherit', () => {
+    const base = {
+      ...validBook,
+      id: OID,
+      accountId: OID,
+      /** Required on a stored book, nullable in meaning: null = inherit the account matrix. */
+      perms: null,
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-01T00:00:00.000Z',
+      createdBy: OID,
+    };
+    const creator = { userId: OID, role: null, kind: 'account' as const };
+
+    expect(
+      bookSchema.safeParse({
+        ...base,
+        members: [creator, { userId: OTHER_MEMBER, role: null, kind: 'guest' }],
+      }).success,
+    ).toBe(false);
+
+    expect(
+      bookSchema.safeParse({
+        ...base,
+        members: [creator, { userId: OTHER_MEMBER, role: 'VIEWER', kind: 'guest' }],
+      }).success,
+    ).toBe(true);
+  });
+
+  it('refuses two rows for one person — a set keyed by userId', () => {
+    // Otherwise the resolver has to pick between them, which is exactly the ambiguity to design out
+    // when a guest later joins the account.
+    const base = {
+      ...validBook,
+      id: OID,
+      accountId: OID,
+      /** Required on a stored book, nullable in meaning: null = inherit the account matrix. */
+      perms: null,
+      createdAt: '2026-07-01T00:00:00.000Z',
+      updatedAt: '2026-07-01T00:00:00.000Z',
+      createdBy: OID,
+    };
+
+    expect(
+      bookSchema.safeParse({
+        ...base,
+        members: [
+          { userId: OID, role: null, kind: 'account' },
+          { userId: OID, role: 'VIEWER', kind: 'guest' },
+        ],
+      }).success,
+    ).toBe(false);
   });
 
   it('keeps members out of the update input — bulk membership edits are undesigned', () => {

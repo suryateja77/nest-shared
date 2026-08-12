@@ -7,6 +7,7 @@ import {
   signedMoneyTotal,
   timestampsSchema,
 } from './common.js';
+import { permissionsSchema, rolePermissionsSchema, roleSchema } from './role.js';
 
 /**
  * [LOG-01]: `CustomField { name, type: 'text'|'toggle', placeholder? }`. [OVL-08] renders each as
@@ -59,6 +60,46 @@ const uniqueLabels = z
   .refine(isUnique, 'Entries must be unique');
 
 /**
+ * How a person reaches a book — `[GAP-2]`, built.
+ *
+ * `account` is a member of the book's account who was added to this book. `guest` is someone from
+ * **outside** the account, invited to this book alone. They are one array rather than two because
+ * `[SCR-07]` renders one member list, and because an authorization resolver that reads one list
+ * cannot silently miss half the members.
+ */
+export const bookMemberKindSchema = z.enum(['account', 'guest']);
+export type BookMemberKind = z.infer<typeof bookMemberKindSchema>;
+
+/**
+ * One row of a book's membership.
+ *
+ * **`role: null` means *inherit the account role*, resolved live on every request — never a
+ * snapshot.** That distinction is the whole design and it is a security property, not a preference:
+ * `[LOG-16]`'s own save-bar hint reads `PERMISSIONS APPLY TO EVERY BOOK IN THIS ACCOUNT`, so if this
+ * field copied the account role at add-time, demoting someone from EDITOR to VIEWER on `[SCR-08]`
+ * would leave them EDITOR in every book they were already in — invisibly, and forever. Storing the
+ * absence of an override and resolving it at read time makes the account matrix keep reaching every
+ * book that never overrode it.
+ *
+ * A **guest has no account role to inherit**, so the refinement below requires an explicit one. This
+ * is why `role` cannot simply be non-nullable with a sentinel: the two states are genuinely
+ * different, and only one of them is legal for a guest.
+ *
+ * What a role *can do* here comes from `Book.perms ?? Account.permissions` — see `bookBaseSchema`.
+ */
+export const bookMemberSchema = z
+  .object({
+    userId: objectId,
+    role: roleSchema.nullable(),
+    kind: bookMemberKindSchema,
+  })
+  .refine((member) => member.kind === 'account' || member.role !== null, {
+    message: 'A guest carries an explicit role — there is no account role for them to inherit',
+    path: ['role'],
+  });
+export type BookMember = z.infer<typeof bookMemberSchema>;
+
+/**
  * Module-private, exactly as `accountBaseSchema` is, and for a stronger reason than symmetry.
  *
  * `z.infer` of a refined schema is identical to the base object's inferred type, so an exported
@@ -89,19 +130,37 @@ const bookBaseSchema = z
      */
     createdBy: objectId,
     /**
-     * Who can see this book — [LOG-01]'s `members: string[]`, again as ids rather than names.
+     * Who can reach this book, and as what — [LOG-01]'s `members: string[]`, widened.
      *
-     * **Visibility, not permission.** What a member may *do* once they can see a book comes from
-     * their account role and the account's capability matrix ([LOG-16], [LOG-17]); there is no
-     * per-book override and inventing one is [GAP-2]. This list only decides whether the book is
-     * theirs to reach at all.
+     * **This is now visibility *and* permission.** It used to be ids alone, with capabilities coming
+     * from the account matrix keyed by the member's account role, and a per-book override was
+     * [GAP-2]. [GAP-2] is built: each row may carry a role that applies in this book only, and a row
+     * may belong to someone outside the account entirely.
+     *
+     * Ordering is not meaningful and no screen renders it, so this is a set keyed by `userId`.
      *
      * [LOG-17] writes `inBook` with a `!b.members` branch for books that predate the field. That
      * branch is deliberately **not** reproduced: `members` is required here and `migrate.ts`
      * backfills every existing book with its account's full membership, which is the same outcome
      * without a permanent "unset means everyone" escape hatch sitting in an access check.
      */
-    members: z.array(objectId).refine(isUnique, 'Members must be unique'),
+    members: z
+      .array(bookMemberSchema)
+      .refine((rows) => isUnique(rows.map((row) => row.userId)), 'Members must be unique'),
+    /**
+     * This book's own capability matrix — **`null` means inherit the account's, live.**
+     *
+     * Same inheritance contract as `bookMemberSchema.role` one level up, and for the same reason: an
+     * account creator editing `[SCR-08]`'s matrix must keep reaching every book that never set its
+     * own. A book detaches only when someone actually edits it here, so every book that predates
+     * this field migrates to `null` and behaves exactly as it did before.
+     *
+     * Two levels, both legible: *who holds which role here* is `members[].role`, *what a role may do
+     * here* is this. Per-person capability sets were rejected — they multiply to members × books × 6
+     * flags with no vocabulary to explain any of it, and the design's whole permission language is
+     * role → matrix.
+     */
+    perms: rolePermissionsSchema.nullable(),
     categories: uniqueLabels,
     paymentModes: uniqueLabels,
     /**
@@ -151,8 +210,10 @@ const bookBaseSchema = z
  * would keep `canAdminBook` (Move / Archive / Delete on `[SCR-07]`) over a book they can no longer
  * see. Mirrors `accountSchema`'s creator-is-a-member refinement, for the same reason.
  */
-const creatorIsAMember = (book: { createdBy: string; members: string[] }): boolean =>
-  book.members.includes(book.createdBy);
+const creatorIsAMember = (book: {
+  createdBy: string;
+  members: readonly { userId: string }[];
+}): boolean => book.members.some((member) => member.userId === book.createdBy);
 const CREATOR_IS_A_MEMBER = 'A book’s creator must be one of its members';
 
 export const bookSchema = bookBaseSchema.refine(creatorIsAMember, CREATOR_IS_A_MEMBER);
@@ -180,14 +241,37 @@ export const createBookInputSchema = bookBaseSchema
     createdBy: true,
     createdAt: true,
     updatedAt: true,
+    /**
+     * **`perms` is server-owned at creation and always `null`** — a new book inherits its account's
+     * matrix. Accepting one here would let a book be born already detached from `[SCR-08]`, which is
+     * the opposite of the inheritance contract, and `[OVL-09]` draws no matrix. Detaching is an
+     * explicit later act through the book's own settings.
+     */
+    perms: true,
   })
   .extend({
     /**
-     * Defaulted, because `[OVL-09]` renders no picker at all in a single-member account
+     * `[OVL-09]` step 2's picker — **account members only**, so `kind` is implied rather than sent.
+     * A guest cannot be added here: they arrive through an invitation they have to accept, and a
+     * create body that could mint guests would be a way to name someone outside the account without
+     * their consent.
+     *
+     * `role` is per-person and optional. Omitted (or `null`) means *inherit the account role*, which
+     * is what the picker shows by default; a value is the book creator's deliberate override.
+     *
+     * Defaulted to `[]`, because `[OVL-09]` renders no picker at all in a single-member account
      * (`nbShared = acct.members.length > 1`). An omitted list means "just me", which is what the
      * server's force-include of the creator produces.
      */
-    members: z.array(objectId).refine(isUnique, 'Members must be unique').default([]),
+    members: z
+      .array(
+        z.object({
+          userId: objectId,
+          role: roleSchema.nullable().default(null),
+        }),
+      )
+      .refine((rows) => isUnique(rows.map((row) => row.userId)), 'Members must be unique')
+      .default([]),
   });
 export type CreateBookInput = z.infer<typeof createBookInputSchema>;
 
@@ -208,9 +292,12 @@ export type CreateBookInput = z.infer<typeof createBookInputSchema>;
  *   the source and the destination, so it needs its own authorized operation.
  * - **`createdBy`** is the authenticated creator, and `[LOG-17]` hangs Move, Archive and Delete off
  *   it.
- * - **`members`** — the design has exactly two membership mutations: the initial set at `[OVL-09]`,
- *   and a **self-only** *Leave book* (`[SCR-07]` → `[OVL-17]`), which removes one id and is
- *   undoable. Neither is a bulk replace, and adding a member back is `[GAP-2]`.
+ * - **`members`** and **`perms`** are the sharpest of all now that `[GAP-2]` is built: between them
+ *   they decide who can read a family's money. They are authorized on `Book.createdBy` alone, which
+ *   is a *different and narrower* gate than the `canEditBook` that admits everything else in this
+ *   schema (`[LOG-17]`: account creator ∨ book creator ∨ the `bookSettings` capability). Folding
+ *   them in here would silently hand book membership to every `bookSettings` holder — so they get
+ *   their own routes, with their own resolver. See `bookMemberInputSchema` below.
  * - **`tint`** and **`sub`** are acquired at creation from the book count and the chosen preset;
  *   `[OVL-09]` offers no control for either and `[SCR-07]` does not edit them.
  *
@@ -283,15 +370,83 @@ export type BookStats = z.infer<typeof bookStatsSchema>;
  * rows, which are *absent* rather than disabled for everyone else, so the screen cannot render
  * without it. It discloses nothing new — every account member's id is already on `AccountSummary`.
  */
-export const bookSummarySchema = bookBaseSchema.omit({ members: true }).extend({
+export const bookSummarySchema = bookBaseSchema.omit({ members: true, perms: true }).extend({
   stats: bookStatsSchema,
   entryCount: z.number().int().nonnegative(),
   /** `cin − cout` restricted to `month`. Signed, and a total rather than an entered amount. */
   monthNet: signedMoneyTotal,
   /** Echoed back so a client cannot misattribute a delta to the wrong month. */
   month: monthString,
+  /**
+   * The caller's own six capabilities **in this book**, already resolved server-side against
+   * `Book.perms ?? Account.permissions` and the role in force for them here.
+   *
+   * New, and now load-bearing. While permissions were account-level, `AccountSummary.myCapabilities`
+   * answered for every book in the account and the client could gate on it once. With `[GAP-2]`
+   * built, two books in one account can grant the same person different capabilities, so the answer
+   * has to travel with the book.
+   *
+   * Resolved server-side for the same reason `accountSummarySchema` withholds the account matrix:
+   * shipping `perms` and letting the client find its own row, read its effective role and index the
+   * matrix is the client re-deriving capabilities, which `nest-authz` forbids. The UI gates on this
+   * and never computes it.
+   */
+  myCapabilities: permissionsSchema,
 });
 export type BookSummary = z.infer<typeof bookSummarySchema>;
+
+/**
+ * One row of `[SCR-07]`'s member section — a book's membership, resolved for display.
+ *
+ * `effectiveRole` is the role actually in force: the row's override if it has one, otherwise the
+ * person's live account role. `inherited` says which of the two it was, because the design needs to
+ * draw the difference — the picker shows an account member's role as a *default* the creator may
+ * change, and a row that has been changed must not look identical to one that has not.
+ *
+ * Deliberately **not** the stored `BookMember`. That would make the client resolve `role ?? account
+ * role` itself, which is the same re-derivation `myCapabilities` exists to prevent, and it would
+ * need the account's member list loaded alongside every book to do it.
+ */
+export const bookMemberSummarySchema = z.object({
+  userId: objectId,
+  /** Resolved from the user record, exactly as `accountMemberSummarySchema.name` is. */
+  name: z.string(),
+  kind: bookMemberKindSchema,
+  effectiveRole: roleSchema,
+  inherited: z.boolean(),
+});
+export type BookMemberSummary = z.infer<typeof bookMemberSummarySchema>;
+
+/**
+ * Adding an account member to a book, and changing the role they hold in it — `[SCR-07]`'s member
+ * section and `[OVL-09]` step 2.
+ *
+ * `role: null` reverts to the inherited account role rather than removing the member; removal is a
+ * `DELETE`, so that the two intents cannot be confused by an omitted field.
+ *
+ * There is no guest variant: a guest's row is written by **accepting an invitation**, never by a
+ * request naming them. That keeps consent on the invitation and means no body can add a person to a
+ * book they have not agreed to join.
+ */
+export const bookMemberInputSchema = z.object({
+  userId: objectId,
+  role: roleSchema.nullable().default(null),
+});
+export type BookMemberInput = z.infer<typeof bookMemberInputSchema>;
+
+/** Changing one existing member's role in one book. `null` reverts to the inherited account role. */
+export const bookMemberRoleInputSchema = z.object({ role: roleSchema.nullable() });
+export type BookMemberRoleInput = z.infer<typeof bookMemberRoleInputSchema>;
+
+/**
+ * Editing a book's own capability matrix — `[SCR-08]`'s matrix block, transposed into `[SCR-07]`.
+ *
+ * `null` **re-attaches** the book to its account's matrix, which is what makes the inheritance
+ * reversible: a creator who detached a book by accident can put it back rather than being left to
+ * hand-copy the account's six switches per role and hope they match.
+ */
+export const bookPermissionsInputSchema = z.object({ perms: rolePermissionsSchema.nullable() });
+export type BookPermissionsInput = z.infer<typeof bookPermissionsInputSchema>;
 
 /**
  * `GET /accounts/:accountId/books`.

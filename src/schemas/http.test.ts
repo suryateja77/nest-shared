@@ -110,6 +110,18 @@ describe('bookSummarySchema — derived, never stored [LOG-05]', () => {
     entryCount: 42,
     monthNet: 81880,
     month: '2026-07',
+    /**
+     * Per-book now that `[GAP-2]` is built: two books in one account can grant the same person
+     * different capabilities, so the answer travels with the book rather than with the account.
+     */
+    myCapabilities: {
+      viewEntries: true,
+      addEntries: true,
+      editAnyEntry: true,
+      deleteEntries: false,
+      manageMembers: false,
+      bookSettings: false,
+    },
   };
 
   it('carries the figures [SCR-05] renders', () => {
