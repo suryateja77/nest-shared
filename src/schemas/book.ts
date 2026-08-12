@@ -422,13 +422,42 @@ export type BookSummary = z.infer<typeof bookSummarySchema>;
  * role` itself, which is the same re-derivation `myCapabilities` exists to prevent, and it would
  * need the account's member list loaded alongside every book to do it.
  */
+/**
+ * What a rendered member row can be — **wider than what can be stored**, by one value.
+ *
+ * `accountCreator` is never written to `Book.members`; it is synthesised at read time for the person
+ * who created the account. `resolveBookAccess`'s first rung gives them every capability on every
+ * book without a row (`[LOG-17]`: *"the account owner has every privilege on every book in their
+ * account, by definition"*), which is the floor that stops anyone being locked out of their own
+ * account — so they legitimately have no row to render, and a list built from rows alone omitted
+ * someone who can read every entry in the book.
+ *
+ * That mattered once guests existed: `[SCR-07]`'s member section is what a book's creator consults
+ * before inviting an outsider, and a list that under-reports who can see the book is wrong about the
+ * one question it is there to answer. A security audit surfaced it; **the user chose the synthetic
+ * row** over a line of general copy, because a name is checkable and a general statement is not.
+ *
+ * Two enums rather than one, deliberately: `bookMemberSchema.kind` must stay unable to express
+ * `accountCreator`, or a write could store a row that outranks the ladder it is supposed to reflect.
+ */
+export const bookMemberSummaryKindSchema = z.enum(['account', 'guest', 'accountCreator']);
+export type BookMemberSummaryKind = z.infer<typeof bookMemberSummaryKindSchema>;
+
 export const bookMemberSummarySchema = z.object({
   userId: objectId,
   /** Resolved from the user record, exactly as `accountMemberSummarySchema.name` is. */
   name: z.string(),
-  kind: bookMemberKindSchema,
+  kind: bookMemberSummaryKindSchema,
   effectiveRole: roleSchema,
   inherited: z.boolean(),
+  /**
+   * The row cannot be removed or re-roled — it is not stored, so there is nothing to write.
+   *
+   * A flag rather than letting each client re-derive `kind === 'accountCreator'`: the book's own
+   * creator is *also* undeletable (`bookSchema` refines that a creator is one of its members), so
+   * this is genuinely one property with two causes, and `[SCR-07]` should gate on the property.
+   */
+  fixed: z.boolean(),
 });
 export type BookMemberSummary = z.infer<typeof bookMemberSummarySchema>;
 
@@ -462,6 +491,30 @@ export type BookMemberRoleInput = z.infer<typeof bookMemberRoleInputSchema>;
  */
 export const bookPermissionsInputSchema = z.object({ perms: rolePermissionsSchema.nullable() });
 export type BookPermissionsInput = z.infer<typeof bookPermissionsInputSchema>;
+
+/**
+ * `GET /shared-with-me` — the books someone reaches as a **guest**, outside any account they belong
+ * to.
+ *
+ * **A separate endpoint rather than widening `GET /accounts`, and that is the security decision.**
+ * A guest holds no `Account.members` row by definition, so the account list returns them nothing and
+ * every account-scoped route 404s — which fails closed, correctly, but left an accepted invitation
+ * with no way to reach the book it granted. The two repairs on the table were widening the account
+ * list with a `guest: true` marker, or this. Widening would make one endpoint mean two different
+ * things depending on a flag, and that endpoint *is* the account-membership boundary — every future
+ * consumer would have to remember the flag or quietly treat a guest as a member. **The user chose
+ * the separate endpoint**; `[OVL-01]`'s switcher composes the two lists, which is a UI concern and
+ * the cheaper place to hold the complexity.
+ *
+ * `accountName` travels with each book because a guest has no account row to read it from, and a
+ * bare book name is not enough to tell *whose* Groceries this is. Nothing else about the account
+ * ships: no id-bearing member list, no balance, no capability matrix.
+ */
+export const sharedBookSummarySchema = bookSummarySchema.extend({
+  /** The host account's name — context only. A guest is not a member of it. */
+  accountName: z.string().min(1),
+});
+export type SharedBookSummary = z.infer<typeof sharedBookSummarySchema>;
 
 /**
  * `GET /accounts/:accountId/books`.
