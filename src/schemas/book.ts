@@ -483,6 +483,32 @@ export const bookMemberRoleInputSchema = z.object({ role: roleSchema.nullable() 
 export type BookMemberRoleInput = z.infer<typeof bookMemberRoleInputSchema>;
 
 /**
+ * `GET /books/:bookId/perms` — everything the per-book matrix editor needs, and nothing else.
+ *
+ * **A dedicated read, because `bookSummarySchema` withholds `perms` on purpose.** Shipping the raw
+ * matrix on every book row would let a client find its own effective role and index it, which is the
+ * client re-deriving capabilities that `myCapabilities` exists to prevent. `[SCR-08]` solves the
+ * same problem the same way: `accountSummarySchema` withholds the account matrix and a separate
+ * management payload carries it to the one screen that edits it.
+ *
+ * Both matrices travel together because the editor is meaningless without the pair: `perms: null`
+ * says *this book follows the account*, and rendering what that resolves to needs the account's.
+ */
+export const bookPermissionsViewSchema = z.object({
+  /** The book's own matrix, or `null` while it still follows the account's. */
+  perms: rolePermissionsSchema.nullable(),
+  /** The account's — what `null` resolves to, and the starting point when a book detaches. */
+  accountPerms: rolePermissionsSchema,
+  /**
+   * Whether this caller may **write** it. `[SCR-08]` renders a read-only variant of the same table
+   * for everyone who may not edit, and resolving that server-side keeps the client from re-deriving
+   * an authority it must not compute.
+   */
+  editable: z.boolean(),
+});
+export type BookPermissionsView = z.infer<typeof bookPermissionsViewSchema>;
+
+/**
  * Editing a book's own capability matrix — `[SCR-08]`'s matrix block, transposed into `[SCR-07]`.
  *
  * `null` **re-attaches** the book to its account's matrix, which is what makes the inheritance
