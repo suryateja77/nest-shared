@@ -24,8 +24,11 @@ import {
   bookSummarySchema,
   createBookInputSchema,
   customFieldTypeSchema,
+  duplicateBookInputSchema,
+  duplicateBookOptionsSchema,
   MAX_BOOK_LABELS,
   MAX_CUSTOM_FIELDS,
+  moveBookInputSchema,
   updateBookInputSchema,
 } from './book.js';
 import {
@@ -1147,6 +1150,8 @@ describe('bookSummarySchema — a withheld book is null, never zero [GAP-2]', ()
     createdAt: '2026-07-01T00:00:00.000Z',
     updatedAt: '2026-07-31T00:00:00.000Z',
     month: '2026-07',
+    /** `[OVL-18]`'s header meta. Membership, not an entry-derived figure — never withheld. */
+    memberCount: 4,
     myCapabilities: {
       viewEntries: false,
       addEntries: true,
@@ -1183,5 +1188,116 @@ describe('bookSummarySchema — a withheld book is null, never zero [GAP-2]', ()
     expect(bookSummarySchema.safeParse({ ...base, entryCount: null, monthNet: null }).success).toBe(
       false,
     );
+  });
+
+  it('keeps memberCount when every entry-derived figure is withheld', () => {
+    // The line between the two kinds of withholding, pinned: `stats`, `entryCount` and `monthNet`
+    // are entry-derived and null out together for a caller without `viewEntries`. `memberCount` is
+    // membership, so `[OVL-18]`'s header still says `4 MEMBERS` for someone who may not read the
+    // ledger — and the sheet has an answer instead of an empty meta line.
+    const withheld = bookSummarySchema.safeParse({
+      ...base,
+      stats: null,
+      entryCount: null,
+      monthNet: null,
+    });
+    expect(withheld.success && withheld.data.memberCount).toBe(4);
+  });
+
+  it('refuses a null memberCount — it is a count, not a withholdable figure', () => {
+    expect(
+      bookSummarySchema.safeParse({
+        ...base,
+        stats: null,
+        entryCount: null,
+        monthNet: null,
+        memberCount: null,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts memberCount 0 so one un-migrated book cannot fault the whole list', () => {
+    // `creatorIsAMember` makes zero unreachable through any write. It is accepted anyway because a
+    // response contract must never be what takes `[SCR-05]` down — the same reasoning as
+    // `resolveBookAccess`'s `Array.isArray` guard.
+    expect(
+      bookSummarySchema.safeParse({
+        ...base,
+        stats: null,
+        entryCount: null,
+        monthNet: null,
+        memberCount: 0,
+      }).success,
+    ).toBe(true);
+  });
+});
+
+describe('duplicateBookInputSchema — [OVL-19]', () => {
+  const copy = {
+    members: true,
+    categories: true,
+    paymentModes: true,
+    customFields: false,
+    opening: false,
+    reminders: false,
+  };
+
+  it('accepts a name and all six flags', () => {
+    const parsed = duplicateBookInputSchema.safeParse({ name: 'Renovation copy', copy });
+    expect(parsed.success && parsed.data.copy.members).toBe(true);
+  });
+
+  it('refuses a partial copy object — no flag defaults either way', () => {
+    // `members` carries the book's `perms` matrix with it ([LOG-18], decision 5), so a defaulted
+    // flag would be a silent decision about who can read a family's money.
+    const withoutMembers = {
+      categories: true,
+      paymentModes: true,
+      customFields: false,
+      opening: false,
+      reminders: false,
+    };
+    expect(duplicateBookInputSchema.safeParse({ name: 'X', copy: withoutMembers }).success).toBe(
+      false,
+    );
+  });
+
+  it('holds the copy to the same name bounds as the original', () => {
+    // Cut from `bookBaseSchema`, so a copy can never take a name the source could not hold.
+    expect(duplicateBookInputSchema.safeParse({ name: '', copy }).success).toBe(false);
+    expect(duplicateBookInputSchema.safeParse({ name: 'x'.repeat(61), copy }).success).toBe(false);
+  });
+
+  it('carries no entries flag — a duplicate of a ledger carries the ledger', () => {
+    // [OVL-19]: "Entries are not a checkbox... Do not add a toggle for it." Pinned so nobody adds
+    // one by reading the six-checkbox list as the whole story.
+    expect(Object.keys(duplicateBookOptionsSchema.shape)).not.toContain('entries');
+  });
+
+  it('names no destination account — the copy lands beside the original', () => {
+    // Same reason `createBookInputSchema` omits `accountId`: the server resolved it from the source
+    // book it just authorized, and a body copy would be a second claim about where the write goes.
+    const parsed = duplicateBookInputSchema.safeParse({
+      name: 'Renovation copy',
+      copy,
+      accountId: OID,
+    });
+    expect(parsed.success && 'accountId' in parsed.data).toBe(false);
+  });
+});
+
+describe('moveBookInputSchema — [OVL-20]', () => {
+  it('accepts a destination account id', () => {
+    expect(moveBookInputSchema.safeParse({ accountId: OID }).success).toBe(true);
+  });
+
+  it('refuses anything that is not an object id', () => {
+    expect(moveBookInputSchema.safeParse({ accountId: 'my-money' }).success).toBe(false);
+    expect(moveBookInputSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('names no source — the source is the authorized :bookId, never a body claim', () => {
+    const parsed = moveBookInputSchema.safeParse({ accountId: OID, bookId: OID });
+    expect(parsed.success && 'bookId' in parsed.data).toBe(false);
   });
 });

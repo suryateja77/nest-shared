@@ -288,8 +288,10 @@ export type CreateBookInput = z.infer<typeof createBookInputSchema>;
  *   `[LOG-05]` derives, so a general update rewriting it would silently restate every historical
  *   balance on `[SCR-06]` — with no entry to point at and no undo, which `[LOG-03]` requires on
  *   anything destructive. It looks like an ordinary field and behaves like a destructive one.
- * - **`accountId`** — moving a book between accounts (`[REQ-4]`) needs `bookSettings` on **both**
- *   the source and the destination, so it needs its own authorized operation.
+ * - **`accountId`** — moving a book between accounts (`[REQ-4]`) is its own authorized operation with
+ *   consequences no field assignment can carry: `[LOG-18]` converts members who are not in the
+ *   destination into guests, and may have to mint a guest row for the source account's creator. See
+ *   `moveBookInputSchema`.
  * - **`createdBy`** is the authenticated creator, and `[LOG-17]` hangs Move, Archive and Delete off
  *   it.
  * - **`members`** and **`perms`** are the sharpest of all now that `[GAP-2]` is built: between them
@@ -332,6 +334,75 @@ export const updateBookInputSchema = bookBaseSchema
   })
   .partial();
 export type UpdateBookInput = z.infer<typeof updateBookInputSchema>;
+
+/**
+ * `[OVL-19]`'s six checkboxes — **WHAT ELSE COMES ALONG**, in the order the sheet draws them.
+ *
+ * Entries are not here and must never be added: `[OVL-19]` is explicit that *"a duplicate of a ledger
+ * carries the ledger. Do not add a toggle for it."* Every entry copies unconditionally, which is what
+ * the ALWAYS COPIED card promises.
+ *
+ * **All six are required, with no defaults.** An omitted flag defaulting either way is a silent
+ * decision about access-bearing data — `members` carries the book's `perms` matrix with it
+ * (`[LOG-18]`, decision 5) — and a client that forgets a key should get a `400`, not a copy whose
+ * sharing it did not choose. The three repos pin one `nest-shared` version, so there is no old client
+ * for a default to protect.
+ *
+ * The server treats a `true` on something the source does not have as a no-op rather than an error;
+ * `[OVL-19]` renders those rows inert with `NONE ON THIS BOOK` / `THIS BOOK OPENS AT ZERO` /
+ * `NONE LINKED`, and a sheet that cannot send the flag should not make the API stricter than the UI.
+ */
+export const duplicateBookOptionsSchema = z.object({
+  /** Members, their per-book roles, guests **and** `perms` — `[LOG-18]`, decision 5. */
+  members: z.boolean(),
+  categories: z.boolean(),
+  paymentModes: z.boolean(),
+  customFields: z.boolean(),
+  opening: z.boolean(),
+  /** Reminders do not exist yet, so this is always a no-op today. See `duplicateBookInputSchema`. */
+  reminders: z.boolean(),
+});
+export type DuplicateBookOptions = z.infer<typeof duplicateBookOptionsSchema>;
+
+/**
+ * `POST /books/:bookId/duplicate` — `[OVL-19]`.
+ *
+ * **`name` is cut from `bookBaseSchema`** rather than restated, so the copy can never accept a name
+ * the original could not hold. `[OVL-19]` additionally requires it to be unique within the account,
+ * trimmed and case-insensitively — that is a cross-document rule no zod schema can express, so it
+ * lives in the service beside the other rules of its kind and the sheet mirrors it in its hint.
+ *
+ * **The destination account is not in the body.** A duplicate *"lands in {ACCOUNT}, next to the
+ * original"*, which the server already knows from the source book it just authorized — the same
+ * reason `createBookInputSchema` omits `accountId`. Nothing about a copy is a second claim about
+ * which account is being written to.
+ *
+ * `reminders` is contract-complete and currently inert: no reminder collection exists yet, so the
+ * flag is accepted, has nothing to act on, and `[OVL-19]` draws its row in the `NONE LINKED` inert
+ * state the sheet already specifies for a book with none. Whoever builds `[SCR-10]` makes it live
+ * without a contract change, which is why it is here rather than added later.
+ */
+export const duplicateBookInputSchema = bookBaseSchema.pick({ name: true }).extend({
+  copy: duplicateBookOptionsSchema,
+});
+export type DuplicateBookInput = z.infer<typeof duplicateBookInputSchema>;
+
+/**
+ * `POST /books/:bookId/move` — `[OVL-20]`.
+ *
+ * The destination account, and nothing else. The **source** is the authorized `:bookId`, never a
+ * claim in the body; `[LOG-18]`'s rewritten rule derives every other consequence — which members
+ * convert to guests, whether the source account's creator needs a guest row — from the two documents
+ * the server loads, so there is nothing further for a client to assert.
+ *
+ * **This is the whole body, and that is a consequence of decision 1.** `[OVL-20]` now offers only
+ * accounts the caller created, so the mover is always the destination's creator and holds every
+ * capability there by `[LOG-16]`'s short-circuit. `updateBookInputSchema`'s note above — that a move
+ * *"needs `bookSettings` on both the source and the destination"* — describes the wider rule this
+ * replaced; the destination check is now an identity check, and it is stronger.
+ */
+export const moveBookInputSchema = z.object({ accountId: objectId });
+export type MoveBookInput = z.infer<typeof moveBookInputSchema>;
 
 /**
  * Derived totals for a book ([LOG-05]). **Never stored** — recomputed from entries on every read.
@@ -387,6 +458,45 @@ export const bookSummarySchema = bookBaseSchema.omit({ members: true, perms: tru
    */
   stats: bookStatsSchema.nullable(),
   entryCount: z.number().int().nonnegative().nullable(),
+  /**
+   * How many people can reach this book — `[OVL-18]`'s header meta (`10 ENTRIES · ₹99,621 ·
+   * 4 MEMBERS`) and `[OVL-19]`'s members row (`4 MEMBERS · SAME ACCESS AS NOW`).
+   *
+   * **The formula is `members.length`, plus one when the account's creator holds no row** — it is
+   * stated here because the obvious implementation is wrong and wrong by a plausible-looking number.
+   *
+   * `Book.members` is not the set of people who can reach the book. `resolveBookAccess`'s first rung
+   * gives the **account's** creator every capability on every book in their account without a row,
+   * and `book.model.ts`'s creator-is-a-member guard checks `Book.createdBy` only — so a book made by
+   * one admin of a shared account genuinely omits the account's own creator from the stored array.
+   * That is a seeded, ordinary state, not a hypothetical.
+   *
+   * `bookMemberSummarySchema` already carries the answer for the roster endpoint: it synthesizes the
+   * missing person as `kind: 'accountCreator'`, a row that is never written. **This count must agree
+   * with that list**, because `[OVL-18]`'s header and `[OVL-19]`'s members row are read as describing
+   * the same people `GET /books/:bookId/members` returns. A naive `members.length` disagrees by one in
+   * exactly the multi-admin case the design exists to serve, and disagrees silently.
+   *
+   * **A count, deliberately, where `members` itself stays withheld.** The rule this schema states
+   * above is that a field ships when a screen renders it; `[OVL-18]` renders exactly this number and
+   * no screen renders the roster, so the roster stays off. The gap between the two is real — a count
+   * says how many, the array says *which of your household can see each book* — and
+   * `GET /books/:bookId/members` already serves the array to callers who have earned it.
+   *
+   * **Not withheld with `stats`.** It is membership, not an entry-derived figure, so the `[GAP-2]`
+   * argument that nulls a balance for a caller without `viewEntries` does not reach it: someone who
+   * can see the row can already see that the book exists and who its account holds.
+   *
+   * **On the row rather than a second request**, because the kebab is the hot path — `[OVL-18]` opens
+   * from a list already in cache, and a round trip per tap to render one integer would put a spinner
+   * inside a menu.
+   *
+   * `nonnegative`, not `positive`, though `creatorIsAMember` makes zero unreachable through any
+   * write. A response contract must never be the thing that faults `[SCR-05]`: one un-migrated book
+   * with an empty array would otherwise fail validation and take the whole book list down with it,
+   * which is the failure `resolveBookAccess`'s `Array.isArray` guard already exists to prevent.
+   */
+  memberCount: z.number().int().nonnegative(),
   /** `cin − cout` restricted to `month`. Signed, a total rather than an entered amount, and
    *  withheld with the rest when the caller may not read this book's entries. */
   monthNet: signedMoneyTotal.nullable(),

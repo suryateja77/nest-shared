@@ -111,6 +111,8 @@ describe('bookSummarySchema — derived, never stored [LOG-05]', () => {
     monthNet: 81880,
     accountName: 'Sharma Family',
     month: '2026-07',
+    /** `[OVL-18]`'s header meta — `10 ENTRIES · ₹99,621 · 4 MEMBERS`. */
+    memberCount: 4,
     /**
      * Per-book now that `[GAP-2]` is built: two books in one account can grant the same person
      * different capabilities, so the answer travels with the book rather than with the account.
