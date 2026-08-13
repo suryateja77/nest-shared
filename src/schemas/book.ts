@@ -407,6 +407,26 @@ export const bookSummarySchema = bookBaseSchema.omit({ members: true, perms: tru
    * and never computes it.
    */
   myCapabilities: permissionsSchema,
+  /**
+   * The owning account's display name — `[SCR-06]`'s eyebrow, `{ACCOUNT} · NET BALANCE`.
+   *
+   * **Denormalised deliberately, because `accountId` cannot answer this for the reader who most
+   * needs it.** A `[GAP-2]` guest holds a `Book.members` row without an account row, so the book's
+   * account is not in their `GET /accounts` list and the client has no way to turn `accountId` into
+   * a name. `[SCR-06]` resolved it from the *navigation* account instead, which meant a book opened
+   * from `[OVL-01]`'s SHARED WITH ME printed the reader's **own** account name over another
+   * household's balance — on the one line that says whose money is on screen.
+   *
+   * **Moved down from `sharedBookSummarySchema`, not added beside it.** That extension already
+   * carried this exact field, same type and same constraint, for exactly this reason — which is the
+   * evidence that it belongs on the base. Keeping both would be one value declared twice.
+   *
+   * Costs no extra query anywhere: all six producers reach `toBookSummary` through a resolver whose
+   * job is *find the book, then authorize against its account*, so the account document is already in
+   * hand. `[LOG-01]` models `Book.acct` as an id and is simply silent on the wire shape, as it is for
+   * `stats`, `entryCount` and `myCapabilities`.
+   */
+  accountName: z.string().min(1),
 });
 export type BookSummary = z.infer<typeof bookSummarySchema>;
 
@@ -535,11 +555,14 @@ export type BookPermissionsInput = z.infer<typeof bookPermissionsInputSchema>;
  * `accountName` travels with each book because a guest has no account row to read it from, and a
  * bare book name is not enough to tell *whose* Groceries this is. Nothing else about the account
  * ships: no id-bearing member list, no balance, no capability matrix.
+ *
+ * **That field now lives on `bookSummarySchema` itself, so this adds nothing and is an alias.** It
+ * was declared here first, for the reason above; `[SCR-06]` then needed the same value for the same
+ * reason — a guest reading a shared book's ledger cannot name its account either — and one value
+ * declared on two schemas is one that can drift. The type is kept as a distinct name because the
+ * route's *meaning* is distinct: this is the list of books reachable **without** an account row.
  */
-export const sharedBookSummarySchema = bookSummarySchema.extend({
-  /** The host account's name — context only. A guest is not a member of it. */
-  accountName: z.string().min(1),
-});
+export const sharedBookSummarySchema = bookSummarySchema;
 export type SharedBookSummary = z.infer<typeof sharedBookSummarySchema>;
 
 /**

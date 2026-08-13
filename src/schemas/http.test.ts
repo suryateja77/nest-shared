@@ -109,6 +109,7 @@ describe('bookSummarySchema — derived, never stored [LOG-05]', () => {
     stats: { cin: 85000, cout: 3120, bal: 141880 },
     entryCount: 42,
     monthNet: 81880,
+    accountName: 'Sharma Family',
     month: '2026-07',
     /**
      * Per-book now that `[GAP-2]` is built: two books in one account can grant the same person

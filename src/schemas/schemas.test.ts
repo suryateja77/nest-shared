@@ -1132,6 +1132,8 @@ describe('bookSummarySchema — a withheld book is null, never zero [GAP-2]', ()
   const base = {
     id: OID,
     accountId: OID,
+    /** `[SCR-06]`'s eyebrow — the one thing a guest cannot resolve from `accountId` themselves. */
+    accountName: 'Sharma Family',
     name: 'Renovation',
     tint: '#B4472C',
     createdBy: OID,
