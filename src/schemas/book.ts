@@ -367,10 +367,19 @@ export type DuplicateBookOptions = z.infer<typeof duplicateBookOptionsSchema>;
 /**
  * `POST /books/:bookId/duplicate` — `[OVL-19]`.
  *
- * **`name` is cut from `bookBaseSchema`** rather than restated, so the copy can never accept a name
- * the original could not hold. `[OVL-19]` additionally requires it to be unique within the account,
- * trimmed and case-insensitively — that is a cross-document rule no zod schema can express, so it
- * lives in the service beside the other rules of its kind and the sheet mirrors it in its hint.
+ * **`name` and `tint` are cut from `bookBaseSchema`** rather than restated, so the copy can never
+ * accept a value the original could not hold. `[OVL-19]` additionally requires the name to be unique
+ * within the account, trimmed and case-insensitively — a cross-document rule no zod schema can
+ * express, so it lives in the service beside the other rules of its kind and the sheet mirrors it in
+ * its hint.
+ *
+ * **`tint` is here because the client owns tint selection**, exactly as it does on
+ * `createBookInputSchema`. `[LOG-18]` gives the copy `TINTS[books.length % 6]` — a *new* tint, not the
+ * source's, so a copy sitting next to its original on `[SCR-05]` is not two rows with an identical
+ * rail differing only by name. Neither `[OVL-09]` nor `[OVL-19]` draws a picker; both apply that rule
+ * silently, and the palette lives in the client (`nest-ui/src/lib/tints.ts`) because that is where
+ * `[DS-1]` is implemented. A server-side second authority for the same value would be two ways to do
+ * one thing, and the server has no palette to be authoritative with.
  *
  * **The destination account is not in the body.** A duplicate *"lands in {ACCOUNT}, next to the
  * original"*, which the server already knows from the source book it just authorized — the same
@@ -382,7 +391,7 @@ export type DuplicateBookOptions = z.infer<typeof duplicateBookOptionsSchema>;
  * state the sheet already specifies for a book with none. Whoever builds `[SCR-10]` makes it live
  * without a contract change, which is why it is here rather than added later.
  */
-export const duplicateBookInputSchema = bookBaseSchema.pick({ name: true }).extend({
+export const duplicateBookInputSchema = bookBaseSchema.pick({ name: true, tint: true }).extend({
   copy: duplicateBookOptionsSchema,
 });
 export type DuplicateBookInput = z.infer<typeof duplicateBookInputSchema>;

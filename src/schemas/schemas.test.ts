@@ -1243,7 +1243,7 @@ describe('duplicateBookInputSchema — [OVL-19]', () => {
   };
 
   it('accepts a name and all six flags', () => {
-    const parsed = duplicateBookInputSchema.safeParse({ name: 'Renovation copy', copy });
+    const parsed = duplicateBookInputSchema.safeParse({ name: 'Renovation copy', tint: '#B4472C', copy });
     expect(parsed.success && parsed.data.copy.members).toBe(true);
   });
 
@@ -1257,15 +1257,27 @@ describe('duplicateBookInputSchema — [OVL-19]', () => {
       opening: false,
       reminders: false,
     };
-    expect(duplicateBookInputSchema.safeParse({ name: 'X', copy: withoutMembers }).success).toBe(
+    expect(duplicateBookInputSchema.safeParse({ name: 'X', tint: '#B4472C', copy: withoutMembers }).success).toBe(
       false,
     );
   });
 
   it('holds the copy to the same name bounds as the original', () => {
     // Cut from `bookBaseSchema`, so a copy can never take a name the source could not hold.
-    expect(duplicateBookInputSchema.safeParse({ name: '', copy }).success).toBe(false);
-    expect(duplicateBookInputSchema.safeParse({ name: 'x'.repeat(61), copy }).success).toBe(false);
+    expect(duplicateBookInputSchema.safeParse({ name: '', tint: '#B4472C', copy }).success).toBe(false);
+    expect(duplicateBookInputSchema.safeParse({ name: 'x'.repeat(61), tint: '#B4472C', copy }).success).toBe(false);
+  });
+
+  it('requires a tint, held to the same format the original is', () => {
+    // [LOG-18] gives the copy `TINTS[books.length % 6]` — a *new* tint, so a copy sitting next to
+    // its original on [SCR-05] is not two rows with an identical rail. The client owns the palette
+    // and applies the rule, exactly as it does on create.
+    expect(duplicateBookInputSchema.safeParse({ name: 'Renovation copy', copy }).success).toBe(
+      false,
+    );
+    expect(
+      duplicateBookInputSchema.safeParse({ name: 'Renovation copy', tint: 'orange', copy }).success,
+    ).toBe(false);
   });
 
   it('carries no entries flag — a duplicate of a ledger carries the ledger', () => {
@@ -1279,6 +1291,7 @@ describe('duplicateBookInputSchema — [OVL-19]', () => {
     // book it just authorized, and a body copy would be a second claim about where the write goes.
     const parsed = duplicateBookInputSchema.safeParse({
       name: 'Renovation copy',
+      tint: '#B4472C',
       copy,
       accountId: OID,
     });
