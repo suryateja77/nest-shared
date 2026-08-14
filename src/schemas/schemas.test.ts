@@ -32,11 +32,15 @@ import {
   updateBookInputSchema,
 } from './book.js';
 import {
+  bulkDeleteEntriesInputSchema,
+  bulkLabelEntriesInputSchema,
+  bulkTransferEntriesInputSchema,
   createEntryInputSchema,
   entriesQuerySchema,
   entryAuthorsSchema,
   entryCountSchema,
   entrySchema,
+  MAX_BULK_ENTRIES,
   updateEntryInputSchema,
 } from './entry.js';
 import { MAX_QUERY_LIST_VALUES } from './http.js';
@@ -1344,5 +1348,77 @@ describe('moveBookInputSchema — [OVL-20]', () => {
   it('names no source — the source is the authorized :bookId, never a body claim', () => {
     const parsed = moveBookInputSchema.safeParse({ accountId: OID, bookId: OID });
     expect(parsed.success && 'bookId' in parsed.data).toBe(false);
+  });
+});
+
+/**
+ * `[LOG-21]`'s bulk operations. What is worth pinning here is not that ids parse — it is the three
+ * places the contract deliberately refuses to let the client answer a question the server must.
+ */
+describe('[LOG-21] bulk entry operations', () => {
+  const SECOND_OID = '507f1f77bcf86cd799439012';
+  const ids = [OID, SECOND_OID];
+
+  it('bounds the selection, and refuses an empty one', () => {
+    expect(bulkDeleteEntriesInputSchema.safeParse({ entryIds: ids }).success).toBe(true);
+    // [LOG-21] makes an empty selection unrepresentable — toggleSel returns to null on the last
+    // uncheck — so zero ids is a client bug, not a no-op to absorb.
+    expect(bulkDeleteEntriesInputSchema.safeParse({ entryIds: [] }).success).toBe(false);
+    const tooMany = Array.from({ length: MAX_BULK_ENTRIES + 1 }, () => OID);
+    expect(bulkDeleteEntriesInputSchema.safeParse({ entryIds: tooMany }).success).toBe(false);
+  });
+
+  it('names no source book — the source is the authorized :bookId', () => {
+    const parsed = bulkTransferEntriesInputSchema.safeParse({
+      entryIds: ids,
+      destinationBookId: OID,
+      bookId: SECOND_OID,
+    });
+    expect(parsed.success && 'bookId' in parsed.data).toBe(false);
+  });
+
+  it('carries no mode — copy and move are two routes, because they need two gates', () => {
+    const parsed = bulkTransferEntriesInputSchema.safeParse({
+      entryIds: ids,
+      destinationBookId: OID,
+      mode: 'move',
+    });
+    expect(parsed.success && 'mode' in parsed.data).toBe(false);
+  });
+
+  it('carries no createLabel flag — whether a label is new selects a capability', () => {
+    const parsed = bulkLabelEntriesInputSchema.safeParse({
+      entryIds: ids,
+      field: 'paymentMode',
+      value: 'RuPay',
+      createLabel: true,
+    });
+    expect(parsed.success && 'createLabel' in parsed.data).toBe(false);
+  });
+
+  it('trims the label and refuses a blank or over-long one', () => {
+    const parsed = bulkLabelEntriesInputSchema.safeParse({
+      entryIds: ids,
+      field: 'category',
+      value: '  Groceries  ',
+    });
+    expect(parsed.success && parsed.data.value).toBe('Groceries');
+    expect(
+      bulkLabelEntriesInputSchema.safeParse({ entryIds: ids, field: 'category', value: '   ' })
+        .success,
+    ).toBe(false);
+    expect(
+      bulkLabelEntriesInputSchema.safeParse({
+        entryIds: ids,
+        field: 'category',
+        value: 'x'.repeat(41),
+      }).success,
+    ).toBe(false);
+  });
+
+  it('refuses a field outside [OVL-26]s two lists', () => {
+    expect(
+      bulkLabelEntriesInputSchema.safeParse({ entryIds: ids, field: 'remark', value: 'x' }).success,
+    ).toBe(false);
   });
 });

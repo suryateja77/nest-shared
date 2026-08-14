@@ -108,7 +108,16 @@ export const createEntryInputSchema = entrySchema.omit({
 });
 export type CreateEntryInput = z.infer<typeof createEntryInputSchema>;
 
-/** Same server-owned fields; moving an entry between books is not a designed operation either. */
+/**
+ * Same server-owned fields.
+ *
+ * **`bookId` stays omitted even though moving an entry between books is now designed.** `[LOG-21]`
+ * added it, but not as a field a client may set: a move is *"a copy plus a hard delete of the
+ * originals"*, so the entry that lands in the destination is a **new** document with a new id, and
+ * the original is removed rather than repointed. Nothing anywhere re-parents an entry by writing
+ * `bookId`, and accepting one here would be a second claim about which book is being written to —
+ * the mistake `createEntryInputSchema` omits it to prevent. See `bulkTransferEntriesInputSchema`.
+ */
 export const updateEntryInputSchema = createEntryInputSchema.partial();
 export type UpdateEntryInput = z.infer<typeof updateEntryInputSchema>;
 
@@ -202,3 +211,134 @@ export type EntryAuthors = z.infer<typeof entryAuthorsSchema>;
 /** `{ items, nextCursor }` of entries. */
 export const entriesPageSchema = paginated(entrySchema);
 export type EntriesPage = z.infer<typeof entriesPageSchema>;
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * [LOG-21] — selection mode and bulk operations
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * How many entries one bulk operation may name.
+ *
+ * A bound rather than none, for the reason `MAX_QUERY_LIST_VALUES` has one: every id becomes part of
+ * a Mongo `$in`, and each one then costs a document write on one of four paths. Unbounded, a single
+ * request could name every entry the caller can see.
+ *
+ * **500 is ten full ledger pages** (`DEFAULT_PAGE_SIZE`), which is what makes it safely above the
+ * interaction rather than an arbitrary round number: `[OVL-25]`'s *Select all* picks *"the filtered
+ * visible list"*, and on a cursor-paged ledger "visible" means loaded. Reaching the cap therefore
+ * takes ten deliberate presses of *Load older entries* before the selection even starts.
+ */
+export const MAX_BULK_ENTRIES = 500;
+
+/**
+ * The selection every bulk operation acts on — `[LOG-21]`'s `sel`.
+ *
+ * **Ids, never a filter.** The alternative — sending `entryFilterQuerySchema` and letting the server
+ * act on everything that matches — was rejected on two grounds. The acted-on set would be resolved
+ * twice, once for `[OVL-27]`'s preview and again at commit, so an entry added in between would be
+ * silently swept into a delete the user never saw named; and `[LOG-03]`'s undo has to restore a
+ * *specific* set, which a filter cannot name after the fact.
+ *
+ * `.min(1)`: every one of the four operations is a no-op on an empty selection, and `[LOG-21]`
+ * makes an empty selection unrepresentable anyway — `toggleSel` *"returns to `null` when the last
+ * row is unchecked"*, so there is no state in which the bar's buttons are pressable with nothing
+ * picked. A request carrying zero ids is a client bug, and answering `400` says so.
+ */
+const bulkEntrySelectionSchema = z.object({
+  entryIds: z.array(objectId).min(1).max(MAX_BULK_ENTRIES),
+});
+
+/**
+ * `POST /books/:bookId/entries/bulk-delete` — `[OVL-28]` in bulk mode.
+ *
+ * The ids alone. The book is the authorized `:bookId`, and every id is confirmed to live in it
+ * server-side — see `entries.ts`, where that check is the whole security of this feature.
+ */
+export const bulkDeleteEntriesInputSchema = bulkEntrySelectionSchema;
+export type BulkDeleteEntriesInput = z.infer<typeof bulkDeleteEntriesInputSchema>;
+
+/**
+ * `POST /books/:bookId/entries/bulk-copy` and `…/bulk-move` — `[OVL-27]`.
+ *
+ * **One body shape, two routes, and that is deliberate.** `[OVL-27]` is *"one component, `bulk: {
+ * mode: 'copy'|'move', to }`"*, so a single route taking a `mode` would have mirrored the UI exactly
+ * — and it would have let a **body value select the authorization path**, because a move additionally
+ * requires `deleteEntries` on the source where a copy does not. A gate chosen by the payload it is
+ * meant to gate is the shape `nest-authz` exists to forbid, so the mode lives in the URL, where each
+ * route states its own capability. The sheet stays one component.
+ *
+ * **No `mode` field, and no flag saying which labels to create.** `[LOG-21]` creates *"missing
+ * labels … in the destination"*, and which are missing is a fact about two documents the server has
+ * already loaded. A client-supplied list would be a claim the server would have to re-derive to
+ * trust, so it derives it and reports what it did in `BulkTransferEntriesResult`.
+ */
+export const bulkTransferEntriesInputSchema = bulkEntrySelectionSchema.extend({
+  destinationBookId: objectId,
+});
+export type BulkTransferEntriesInput = z.infer<typeof bulkTransferEntriesInputSchema>;
+
+/** Which of `[OVL-26]`'s two lists is being stamped — the prototype's `selSet.kind`. */
+export const bulkEntryLabelFieldSchema = z.enum(['category', 'paymentMode']);
+export type BulkEntryLabelField = z.infer<typeof bulkEntryLabelFieldSchema>;
+
+/**
+ * `POST /books/:bookId/entries/bulk-label` — `[OVL-26]`, both of its paths.
+ *
+ * Tapping an existing row and pressing **Add & apply** on a typed name send the *same* request: a
+ * field and a value. `[OVL-26]` already collapses them itself — *"Typing an existing name just
+ * applies it"* — and whether the value is new is a fact about the book's own list, which the server
+ * holds. Deriving it there rather than accepting a `createLabel` flag matters because the answer
+ * **selects a capability**: creating a label is a `bookSettings` write, applying an existing one is
+ * not, so a client-set flag would let the client pick its own gate.
+ *
+ * `.max(40)` matches `entryFilterQuerySchema`'s bound on the same labels, and `uniqueLabels` in
+ * `book.ts` is what the value is measured against once it lands.
+ */
+export const bulkLabelEntriesInputSchema = bulkEntrySelectionSchema.extend({
+  field: bulkEntryLabelFieldSchema,
+  value: z.string().trim().min(1).max(40),
+});
+export type BulkLabelEntriesInput = z.infer<typeof bulkLabelEntriesInputSchema>;
+
+/**
+ * What a bulk operation did, for `[LOG-03]`'s toast.
+ *
+ * `affected` is reported rather than assumed equal to `entryIds.length`, even though the routes
+ * refuse a selection that does not resolve completely. The toast names a count to the user
+ * (*"n entries deleted"*), and a count the client derived from its own request is a count that
+ * cannot be wrong — including when it is.
+ */
+export const bulkEntryResultSchema = z.object({
+  affected: z.number().int().nonnegative(),
+});
+export type BulkEntryResult = z.infer<typeof bulkEntryResultSchema>;
+
+/**
+ * `[OVL-27]`'s result — the toast is `3 entries copied to Coorg Trip · 3 new labels`, so the label
+ * count has to come back.
+ *
+ * **The two lists are separate rather than one `createdLabels`** because they are created in two
+ * different fields of the destination and the undo removes them from two different arrays; a merged
+ * list would have to be re-split by looking each name up again, and a name legitimately present in
+ * both (`Cash` is a payment mode and could be a category) would re-split wrongly.
+ *
+ * `droppedCustomValues` counts entries whose `customValues` did not survive the transfer — the
+ * user's decision of 2026-08-14, and `[OVL-27]`'s copy discloses it. Zero for every book that does
+ * not use custom fields, which is the common case.
+ */
+export const bulkTransferEntriesResultSchema = bulkEntryResultSchema.extend({
+  createdCategories: z.array(z.string()),
+  createdPaymentModes: z.array(z.string()),
+  droppedCustomValues: z.number().int().nonnegative(),
+});
+export type BulkTransferEntriesResult = z.infer<typeof bulkTransferEntriesResultSchema>;
+
+/**
+ * `[OVL-26]`'s result. The toast is `10 entries set to RuPay · new payment mode`, and the trailing
+ * clause appears only when the label was created by this request — which the server decided, so the
+ * server is what reports it.
+ */
+export const bulkLabelEntriesResultSchema = bulkEntryResultSchema.extend({
+  createdLabel: z.boolean(),
+});
+export type BulkLabelEntriesResult = z.infer<typeof bulkLabelEntriesResultSchema>;
