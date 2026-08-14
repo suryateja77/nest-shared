@@ -125,6 +125,16 @@ describe('bookSummarySchema — derived, never stored [LOG-05]', () => {
       manageMembers: false,
       bookSettings: false,
     },
+  /** `[OVL-18]`'s five rows plus `[SCR-07]`'s two membership gates, resolved server-side. */
+  myAuthority: {
+    edit: true,
+    duplicate: true,
+    move: true,
+    delete: true,
+    leave: false,
+    grant: true,
+    revoke: true,
+  },
   };
 
   it('carries the figures [SCR-05] renders', () => {

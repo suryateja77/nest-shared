@@ -661,6 +661,16 @@ describe('accountSummarySchema', () => {
     createdBy: OID,
     members: [{ userId: OID, name: 'Ananya Sharma', role: 'ADMIN' as const }],
     myCapabilities: ROLE_PERMISSION_SEED.ADMIN,
+  /** `[OVL-18]`'s five rows plus `[SCR-07]`'s two membership gates, resolved server-side. */
+  myAuthority: {
+    edit: true,
+    duplicate: true,
+    move: true,
+    delete: true,
+    leave: false,
+    grant: true,
+    revoke: true,
+  },
     stats: { cin: 120000, cout: 37480, bal: 82520 },
     bookCount: 3,
   };
@@ -1160,6 +1170,16 @@ describe('bookSummarySchema — a withheld book is null, never zero [GAP-2]', ()
       manageMembers: false,
       bookSettings: false,
     },
+  /** `[OVL-18]`'s five rows plus `[SCR-07]`'s two membership gates, resolved server-side. */
+  myAuthority: {
+    edit: true,
+    duplicate: true,
+    move: true,
+    delete: true,
+    leave: false,
+    grant: true,
+    revoke: true,
+  },
   };
 
   it('accepts null figures for a caller whose per-book viewEntries is false', () => {

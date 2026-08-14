@@ -430,6 +430,68 @@ export const bookStatsSchema = z.object({
 export type BookStats = z.infer<typeof bookStatsSchema>;
 
 /**
+ * **What the caller may do *to* this book** — resolved server-side, exactly as `myCapabilities` is.
+ *
+ * `myCapabilities` answers *"what may I do **inside** this book"* — read its entries, add one, manage
+ * its members. This answers the other question: may I reshape it, copy it, move it, delete it, leave
+ * it. `CLAUDE.md` already draws that line in those words — *"Authority is `createdBy`, and it is not
+ * a capability"* — which is why the two travel as separate blocks rather than one widened matrix.
+ *
+ * ### Why it exists at all, which is a security fix rather than a convenience
+ *
+ * Every field below was mirrored on the client until 2026-08-14, in `nest-ui/src/lib/bookPermissions.ts`
+ * and again, independently, in `[SCR-07]`'s member section. **Both mirrors were unimplementable**, and
+ * a security audit proved it: the server's `isBookCreator` carries a `bookMember?.kind !== 'guest'`
+ * clamp, and nothing on this schema told a client whether the caller held an `account` row or a
+ * `guest` one. So a book's creator converted to a guest by `[LOG-18]`'s Move — an ordinary outcome,
+ * not a contrived one — was shown Delete (which the server answers `403`), *not* shown Leave (which
+ * the server would have allowed), and still shown Add member, Invite and Revoke. An outsider
+ * permanently attached to a household's book with no route out, because the client was guessing at a
+ * predicate it could not see the inputs to.
+ *
+ * Shipping the caller's `bookMember.kind` instead would have let the client recompute the clamp,
+ * which is the same re-derivation `myCapabilities` exists to prevent (`nest-authz`). So the **answers**
+ * travel, never the inputs.
+ *
+ * ### The fields
+ *
+ * Each names the resolver in `nest-data-service/src/auth/resolvers.ts` that actually refuses, so the
+ * two can be read side by side:
+ *
+ * - **`edit`** → `canEditBook` / `requireBookEditor`. `[SCR-07]`'s editable-versus-read-only variant,
+ *   and `[SCR-06]`'s in-flow category and payment-mode editing.
+ * - **`duplicate`** → the same gate **and** `viewEntries`. A separate field rather than an `edit &&`
+ *   the client performs, because that composite is precisely what the UI kept getting wrong: the copy
+ *   carries every entry, so copying without the right to read them would defeat the per-book matrix.
+ * - **`move`** → `requireBookAccountCreator`. The account's creator alone (`DECISIONS.md` decision
+ *   10), narrower than `[OVL-18]`'s own table. Whether there is anywhere to move *to* stays a client
+ *   question — it is a property of the caller's account list, not of this book.
+ * - **`delete`** → `requireBookAdmin`.
+ * - **`leave`** → `requireBookMember` and **not** an admin. Not simply `!delete`: a caller who cannot
+ *   reach the book at all gets neither, and the client must not have to know that.
+ * - **`grant`** → `requireBookMemberAdmin`, the book's creator alone — deliberately narrower than
+ *   `delete`, because *"an ADMIN of the account cannot bring an outsider into a book they did not
+ *   make"*. Gates `[SCR-07]`'s Add from account and Invite a guest.
+ * - **`revoke`** → `requireBookMemberRevoke`. Removing access, and reading the pending invitations
+ *   that carry a third party's contact.
+ *
+ * `delete` and `revoke` both resolve from `isBookAdmin` and are therefore equal today. They are two
+ * fields rather than one because they are two gates in the service, with two doc-comments explaining
+ * why revoking is deliberately wider than granting — collapsing them here would mean that the day one
+ * of them moves, the other moves silently with it.
+ */
+export const bookAuthoritySchema = z.object({
+  edit: z.boolean(),
+  duplicate: z.boolean(),
+  move: z.boolean(),
+  delete: z.boolean(),
+  leave: z.boolean(),
+  grant: z.boolean(),
+  revoke: z.boolean(),
+});
+export type BookAuthority = z.infer<typeof bookAuthoritySchema>;
+
+/**
  * A book as [SCR-05]'s list row and [SCR-06]'s ledger header need it.
  *
  * `monthNet` is the row's "+₹82,520 THIS MO." delta — **scoped to `month`**, which the client
@@ -526,6 +588,15 @@ export const bookSummarySchema = bookBaseSchema.omit({ members: true, perms: tru
    * and never computes it.
    */
   myCapabilities: permissionsSchema,
+  /**
+   * The caller's authority **over** this book — `[OVL-18]`'s five rows plus `[SCR-07]`'s two
+   * membership gates, each resolved server-side. See `bookAuthoritySchema` for what every field
+   * mirrors and why the client is no longer allowed to compute any of them.
+   *
+   * Required, like `myCapabilities` and for the same reason: a producer that could forget it would
+   * ship a book row claiming no rights at all — or, far worse, every one of them.
+   */
+  myAuthority: bookAuthoritySchema,
   /**
    * The owning account's display name — `[SCR-06]`'s eyebrow, `{ACCOUNT} · NET BALANCE`.
    *
