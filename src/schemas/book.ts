@@ -100,13 +100,10 @@ export const bookMemberSchema = z
 export type BookMember = z.infer<typeof bookMemberSchema>;
 
 /**
- * Module-private, exactly as `accountBaseSchema` is, and for a stronger reason than symmetry.
- *
- * `z.infer` of a refined schema is identical to the base object's inferred type, so an exported
- * `bookBaseSchema.parse(x)` would hand back a value typed `Book` that had skipped
- * `creatorIsAMember`. `nest-shared` is the contract; publishing an invariant-free alias of its
- * central entity is the one thing it must not do. It exists only so the input and response schemas
- * below can be cut from it — zod refuses `.pick()`/`.omit()` on an object carrying a refinement.
+ * Module-private, exactly as `accountBaseSchema` is. It exists so the input and response schemas
+ * below can be cut from it, since zod refuses `.pick()`/`.omit()` on an object carrying a
+ * refinement — and it stays private now that `bookSchema` carries none, because two exported names
+ * for one schema is an invitation to `.parse()` through whichever one has fewer guarantees later.
  */
 const bookBaseSchema = z
   .object({
@@ -201,22 +198,34 @@ const bookBaseSchema = z
   .merge(timestampsSchema);
 
 /**
- * A book's creator is always one of its members.
+ * **A book carries no object-level refinement, and the missing one is deliberate. Do not re-add it.**
  *
- * The design says so twice over: `[OVL-09]`'s picker renders the creator's own row **locked on**,
- * annotated `YOU · ALWAYS HAS ACCESS`, and pressing it flashes *"You always have access to books you
- * create"* rather than unchecking. Enforcing it here closes an incoherence `[LOG-17]` leaves open —
- * its `inBook` special-cases only the *account* creator, so a book creator dropped from `members`
- * would keep `canAdminBook` (Move / Archive / Delete on `[SCR-07]`) over a book they can no longer
- * see. Mirrors `accountSchema`'s creator-is-a-member refinement, for the same reason.
+ * Until v0.24.0 this schema refined *"a book's creator is one of its members"*, mirroring
+ * `accountSchema`. The design still asks for the effect — `[OVL-09]`'s picker renders the creator's
+ * own row **locked on**, annotated `YOU · ALWAYS HAS ACCESS`, and pressing it flashes *"You always
+ * have access to books you create"* rather than unchecking — and the floor it protects is unchanged:
+ * *a book is never left unadministered*.
+ *
+ * What changed is that the rule stopped being a statement about a book. `[LOG-18]`'s Move re-parents
+ * a book, and decision 14 hands `createdBy` to the **destination account's creator**, who reaches
+ * every book in their account through `resolveBookAccess`'s first rung and therefore deliberately
+ * holds no row — minting one would make `[SCR-07]` draw the account's own owner as a removable guest.
+ * The live rule is now *"the creator is one of the members, **or** the account's own creator"*, and
+ * its second clause names a field of a **different document**. `bookBaseSchema` has `accountId` and
+ * nothing else about the account, so zod cannot see the answer; there is no narrower true statement
+ * left to check here either, because the first clause alone is exactly what a moved book breaks.
+ *
+ * So the invariant lives at the write boundary, where the account is already loaded:
+ * `book.model.ts`'s `pre('validate')` hook and the `creatorMemberGuard` query guard beside it, both
+ * of which take the account creator transiently through `$locals` and fail **closed** when a caller
+ * omits it. That is also where it always did the real work — this refinement never ran against a
+ * stored book, because no route returns a full `Book`.
+ *
+ * Keeping the narrow version would have been worse than useless: it is not merely incomplete, it
+ * **rejects a legitimately moved book**, so the first caller to parse one through `bookSchema` would
+ * have had a valid document refused by the contract that describes it.
  */
-const creatorIsAMember = (book: {
-  createdBy: string;
-  members: readonly { userId: string }[];
-}): boolean => book.members.some((member) => member.userId === book.createdBy);
-const CREATOR_IS_A_MEMBER = 'A book’s creator must be one of its members';
-
-export const bookSchema = bookBaseSchema.refine(creatorIsAMember, CREATOR_IS_A_MEMBER);
+export const bookSchema = bookBaseSchema;
 export type Book = z.infer<typeof bookSchema>;
 
 /**
@@ -562,10 +571,11 @@ export const bookSummarySchema = bookBaseSchema.omit({ members: true, perms: tru
    * from a list already in cache, and a round trip per tap to render one integer would put a spinner
    * inside a menu.
    *
-   * `nonnegative`, not `positive`, though `creatorIsAMember` makes zero unreachable through any
-   * write. A response contract must never be the thing that faults `[SCR-05]`: one un-migrated book
-   * with an empty array would otherwise fail validation and take the whole book list down with it,
-   * which is the failure `resolveBookAccess`'s `Array.isArray` guard already exists to prevent.
+   * `nonnegative`, not `positive`. Zero is rare but genuinely reachable: a book whose only rows were
+   * dropped as stale by a Move holds none, and the account's creator administers it while holding no
+   * row at all. Beyond that, a response contract must never be the thing that faults `[SCR-05]` —
+   * one un-migrated book with an empty array would otherwise fail validation and take the whole book
+   * list down with it, the failure `resolveBookAccess`'s `Array.isArray` guard already prevents.
    */
   memberCount: z.number().int().nonnegative(),
   /** `cin − cout` restricted to `month`. Signed, a total rather than an entered amount, and
@@ -664,8 +674,8 @@ export const bookMemberSummarySchema = z.object({
    * The row cannot be removed or re-roled — it is not stored, so there is nothing to write.
    *
    * A flag rather than letting each client re-derive `kind === 'accountCreator'`: the book's own
-   * creator is *also* undeletable (`bookSchema` refines that a creator is one of its members), so
-   * this is genuinely one property with two causes, and `[SCR-07]` should gate on the property.
+   * creator is *also* undeletable (`book.model.ts` refuses to leave a book unadministered), so this
+   * is genuinely one property with two causes, and `[SCR-07]` should gate on the property.
    */
   fixed: z.boolean(),
 });

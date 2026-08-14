@@ -193,9 +193,16 @@ describe('createBookInputSchema', () => {
   // scope, so a refinement on the base makes this whole file fail to *import*. A louder signal than
   // an assertion, and one that cannot be deleted by accident.
 
-  it('refuses a book whose creator is not one of its members', () => {
-    // [OVL-09] locks the creator's own row on ("YOU · ALWAYS HAS ACCESS"). Without this, [LOG-17]
-    // leaves a creator who can administer a book (Move/Archive/Delete) but cannot see it.
+  it('accepts a book whose creator holds no member row, because a Move produces one', () => {
+    // The creator-is-a-member refinement was removed in v0.25.0 and this test is the guard against
+    // it coming back: decision 14 hands `createdBy` to the destination account's creator, who
+    // administers every book in their account through `resolveBookAccess`'s first rung while
+    // deliberately holding no row. The narrow rule refuses that book, so re-adding it here would
+    // have the contract reject a document the service legitimately writes.
+    //
+    // The invariant itself is not gone — `book.model.ts` enforces the widened *"a member, or the
+    // account's own creator"* at the write boundary, where the account is loaded. `models.test.ts`
+    // covers both halves.
     const base = {
       ...validBook,
       id: OID,
@@ -210,10 +217,15 @@ describe('createBookInputSchema', () => {
     expect(bookSchema.safeParse({ ...base, createdBy: OID, members: [account(OID)] }).success).toBe(
       true,
     );
+    // The moved book: creator is the destination account's own creator, and no row stands for them.
     expect(
-      bookSchema.safeParse({ ...base, createdBy: OID, members: [account(OTHER_MEMBER)] }).success,
-    ).toBe(false);
-    expect(bookSchema.safeParse({ ...base, createdBy: OID, members: [] }).success).toBe(false);
+      bookSchema.safeParse({
+        ...base,
+        createdBy: OID,
+        members: [{ userId: OTHER_MEMBER, role: 'EDITOR', kind: 'guest' }],
+      }).success,
+    ).toBe(true);
+    expect(bookSchema.safeParse({ ...base, createdBy: OID, members: [] }).success).toBe(true);
   });
 
   it('inherits the account role and matrix until something overrides them', () => {
