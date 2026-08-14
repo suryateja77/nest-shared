@@ -1249,9 +1249,9 @@ describe('bookSummarySchema — a withheld book is null, never zero [GAP-2]', ()
   });
 
   it('accepts memberCount 0 so one un-migrated book cannot fault the whole list', () => {
-    // `creatorIsAMember` makes zero unreachable through any write. It is accepted anyway because a
-    // response contract must never be what takes `[SCR-05]` down — the same reasoning as
-    // `resolveBookAccess`'s `Array.isArray` guard.
+    // `bookMemberCount` cannot return zero — the account's creator is counted whether or not they
+    // hold a row. It is accepted anyway because a response contract must never be what takes
+    // `[SCR-05]` down — the same reasoning as `resolveBookAccess`'s `Array.isArray` guard.
     expect(
       bookSummarySchema.safeParse({
         ...base,

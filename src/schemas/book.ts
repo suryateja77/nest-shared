@@ -571,11 +571,16 @@ export const bookSummarySchema = bookBaseSchema.omit({ members: true, perms: tru
    * from a list already in cache, and a round trip per tap to render one integer would put a spinner
    * inside a menu.
    *
-   * `nonnegative`, not `positive`. Zero is rare but genuinely reachable: a book whose only rows were
-   * dropped as stale by a Move holds none, and the account's creator administers it while holding no
-   * row at all. Beyond that, a response contract must never be the thing that faults `[SCR-05]` —
-   * one un-migrated book with an empty array would otherwise fail validation and take the whole book
-   * list down with it, the failure `resolveBookAccess`'s `Array.isArray` guard already prevents.
+   * `nonnegative`, not `positive`, though no write can reach zero. `bookMemberCount` returns
+   * `live.length + (accountCreatorHoldsRow ? 0 : 1)`, and both branches floor at one: when the
+   * account's creator holds no row the `+ 1` stands in for them, and when they hold one it is always
+   * `live`, since they are necessarily a current member of their own account. A book whose rows were
+   * all dropped as stale by a Move still counts its account creator.
+   *
+   * It is accepted anyway because a response contract must never be the thing that faults
+   * `[SCR-05]`: one un-migrated book with an empty array would otherwise fail validation and take
+   * the whole book list down with it, the failure `resolveBookAccess`'s `Array.isArray` guard
+   * already exists to prevent.
    */
   memberCount: z.number().int().nonnegative(),
   /** `cin − cout` restricted to `month`. Signed, a total rather than an entered amount, and
