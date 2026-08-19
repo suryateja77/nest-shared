@@ -1,18 +1,16 @@
 import { z } from 'zod';
 import { bookStatsSchema } from './book.js';
-import { objectId, timestampsSchema } from './common.js';
+import {
+  MAX_INVITES_PER_ACCOUNT,
+  MAX_MEMBER_OPS_PER_SAVE,
+  objectId,
+  timestampsSchema,
+} from './common.js';
 import { accountInviteSchema, createInviteInputSchema } from './invite.js';
 import { permissionsSchema, roleSchema, rolePermissionsSchema } from './role.js';
 
 export const accountKindSchema = z.enum(['SHARED', 'PERSONAL']);
 export type AccountKind = z.infer<typeof accountKindSchema>;
-
-/**
- * Family scale, not an arbitrary round number: `[SCR-04]`'s account rows read `4 MEMBERS`, and
- * `[OVL-17]`'s delete confirm names the member count in a sentence. A household that needs more
- * than this is not the product `PRODUCT-SPEC.md` describes.
- */
-export const MAX_INVITES_PER_ACCOUNT = 20;
 
 /**
  * How many accounts one person may belong to — a product ceiling set by the user.
@@ -152,8 +150,12 @@ export type CreateAccountInput = z.infer<typeof createAccountInputSchema>;
 /**
  * Renaming an account, and editing its capability matrix ([SCR-08]).
  *
- * `members` is deliberately absent: membership changes go through the invite and member-management
- * routes, which carry their own authorization, not through a general account update.
+ * `members` is deliberately absent **here**, and `accountManageSaveInputSchema` extends this schema
+ * to add it for `[SCR-08]`'s deferred save (2026-08-19). This comment used to say membership *"goes
+ * through the invite and member-management routes, which carry their own authorization, not through
+ * a general account update"* — the authorization half is still true and is why the extension gates
+ * every staged row per target rather than relying on the one gate at the door. Keeping the base
+ * schema membership-free means only the screen that asks for it can express one.
  */
 export const updateAccountInputSchema = accountBaseSchema
   .pick({ name: true, initial: true, permissions: true })
@@ -283,3 +285,130 @@ export const accountManagementSchema = accountBaseSchema
     'An account’s creator must be one of its members',
   );
 export type AccountManagement = z.infer<typeof accountManagementSchema>;
+
+/* --------------------------------------------------------------------------------------------
+   [SCR-08]'s deferred save — DECISIONS.md, 2026-08-19
+   -------------------------------------------------------------------------------------------- */
+
+/** One member's role, as a batch item. Non-nullable: an account role is inherited from nowhere, so
+ *  `[LOG-16]` has no "follows" state for `null` to mean. */
+export const accountMemberRoleChangeSchema = z.object({ userId: objectId, role: roleSchema });
+export type AccountMemberRoleChange = z.infer<typeof accountMemberRoleChangeSchema>;
+
+/** One pending invitation's role — `[OVL-16]` in invite mode writes this, not a member row. */
+export const accountInviteRoleChangeSchema = z.object({ inviteId: objectId, role: roleSchema });
+export type AccountInviteRoleChange = z.infer<typeof accountInviteRoleChangeSchema>;
+
+/**
+ * The two membership operations `[SCR-08]` can stage.
+ *
+ * **There is no `add`.** An account gains people only by invitation and acceptance — `[LOG-15]`'s
+ * consent rule, and why no request body can name somebody into an account. `[SCR-07]`'s book batch
+ * does have one, because adding an existing account member to a book crosses no tenancy boundary.
+ */
+export const accountMemberChangesSchema = z.object({
+  setRole: z.array(accountMemberRoleChangeSchema).max(MAX_MEMBER_OPS_PER_SAVE).default([]),
+  remove: z.array(objectId).max(MAX_MEMBER_OPS_PER_SAVE).default([]),
+});
+export type AccountMemberChanges = z.infer<typeof accountMemberChangesSchema>;
+
+/** Invitations staged on `[SCR-08]` — `[OVL-06]` to send, `[OVL-16]` to re-role, the pending row's
+ *  REVOKE to withdraw. RESEND is deliberately absent: `[LOG-16]` makes it a toast with no request,
+ *  so there is nothing to stage. */
+export const accountInviteChangesSchema = z.object({
+  send: z.array(createInviteInputSchema).max(MAX_INVITES_PER_ACCOUNT).default([]),
+  setRole: z.array(accountInviteRoleChangeSchema).max(MAX_INVITES_PER_ACCOUNT).default([]),
+  revoke: z.array(objectId).max(MAX_INVITES_PER_ACCOUNT).default([]),
+});
+export type AccountInviteChanges = z.infer<typeof accountInviteChangesSchema>;
+
+const EMPTY_ACCOUNT_MEMBER_CHANGES: AccountMemberChanges = { setRole: [], remove: [] };
+const EMPTY_ACCOUNT_INVITE_CHANGES: AccountInviteChanges = { send: [], setRole: [], revoke: [] };
+
+/**
+ * `PATCH /accounts/:accountId` — everything `[SCR-08]`'s docked Save commits, in one request: the
+ * name, the capability matrix, and every staged person-level change.
+ *
+ * **This is the half that overrides frozen `[LOG-16]`** — *"Role changes are immediate and not part
+ * of the dirty bar — they are per-person facts, not a form."* The user overrode it explicitly after
+ * device testing, because the screen ships a **Discard** button and the two cannot both be honest: a
+ * write that already landed is not discardable. `DECISIONS.md` carries the reasoning, and the design
+ * export will keep re-asserting the original — do not "fix" this back.
+ *
+ * `updateAccountInputSchema`'s own comment said membership *"goes through the invite and member-
+ * management routes, which carry their own authorization, not through a general account update"*.
+ * The authorization half of that is still true and is why this is not a widening of one gate:
+ * `[LOG-16]` gates the whole screen on `requireAccountCreator`, and every staged row is additionally
+ * checked per target — self, the account creator, and non-members are each refused individually.
+ *
+ * See `bookSettingsSaveInputSchema` for why these are operations rather than a desired end state.
+ */
+export const accountManageSaveInputSchema = updateAccountInputSchema
+  /**
+   * **`initial` is dropped here, at the contract.**
+   *
+   * `updateAccountInputSchema` carries it, but the live `PATCH /accounts/:accountId` hand-rolls a
+   * narrower body specifically to exclude it — *"it was the one request field in this module the
+   * client could set that the server should own"*. `[LOG-16]` has a rename **re-derive** the initial
+   * and `[SCR-08]` offers no control for it, so a payload that can set the two independently can
+   * express a state no screen can produce: a chip reading `Z` on an account called *Sharma Family*.
+   *
+   * Omitted rather than left for the handler to strip a second time, because this schema *is* the
+   * route body — which is exactly what `updateBookInputSchema`'s own comment warns about: *"a
+   * contract that can express a change no screen offers is a route waiting to be written against
+   * it."* Found by `contract-guardian` before this shipped.
+   */
+  .omit({ initial: true })
+  .extend({
+    members: accountMemberChangesSchema.default(EMPTY_ACCOUNT_MEMBER_CHANGES),
+    invites: accountInviteChangesSchema.default(EMPTY_ACCOUNT_INVITE_CHANGES),
+  })
+  /** One person, one intent per save — see `bookSettingsSaveInputSchema` for why an ambiguous pair
+   *  is refused rather than ordered. */
+  .refine(
+    (value) => {
+      const touched = [...value.members.setRole.map((change) => change.userId), ...value.members.remove];
+      return new Set(touched).size === touched.length;
+    },
+    { message: 'Each member may appear in only one change per save', path: ['members'] },
+  )
+  /** The same for invitations, which may be re-roled *or* revoked in one save, never both. */
+  .refine(
+    (value) => {
+      const touched = [
+        ...value.invites.setRole.map((change) => change.inviteId),
+        ...value.invites.revoke,
+      ];
+      return new Set(touched).size === touched.length;
+    },
+    { message: 'Each invitation may appear in only one change per save', path: ['invites'] },
+  )
+  /**
+   * **A save must actually ask for something.**
+   *
+   * The hand-rolled body this replaced carried a *"Nothing to update"* refinement, and dropping it
+   * would have been a silent weakening: `members` and `invites` are `.default()`ed, so a bare `{}`
+   * parses cleanly and would reach the handler as a full authorize-hydrate-save round trip that
+   * changes nothing. `[SCR-08]`'s bar is passive when clean and never sends, so an empty body is a
+   * client defect — and the cheapest place to catch one is the contract.
+   */
+  .refine(
+    (value) =>
+      value.name !== undefined ||
+      value.permissions !== undefined ||
+      value.members.setRole.length > 0 ||
+      value.members.remove.length > 0 ||
+      value.invites.send.length > 0 ||
+      value.invites.setRole.length > 0 ||
+      value.invites.revoke.length > 0,
+    'Nothing to update',
+  );
+export type AccountManageSaveInput = z.infer<typeof accountManageSaveInputSchema>;
+
+/**
+ * What a **client** may send — the same schema from the input side, before zod applies the
+ * `members`/`invites` defaults. See `BookSettingsSaveBody` for why the two sides need separate names:
+ * a handler can rely on the groups existing, a caller must be able to omit them, and typing the
+ * request with the output type would force every caller to send empty groups it does not mean.
+ */
+export type AccountManageSaveBody = z.input<typeof accountManageSaveInputSchema>;

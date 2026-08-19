@@ -7,6 +7,8 @@ import {
   moneyAmount,
   moneyTotal,
   signedMoneyAmount,
+  MAX_INVITES_PER_ACCOUNT,
+  MAX_MEMBER_OPS_PER_SAVE,
   signedMoneyTotal,
   timeOfDayString,
 } from './common.js';
@@ -14,12 +16,13 @@ import {
   accountManagementSchema,
   accountSchema,
   accountSummarySchema,
+  accountManageSaveInputSchema,
   createAccountInputSchema,
-  MAX_INVITES_PER_ACCOUNT,
   updateAccountInputSchema,
 } from './account.js';
 import {
   bookSchema,
+  bookSettingsSaveInputSchema,
   bookStatsSchema,
   bookSummarySchema,
   createBookInputSchema,
@@ -1420,5 +1423,124 @@ describe('[LOG-21] bulk entry operations', () => {
     expect(
       bulkLabelEntriesInputSchema.safeParse({ entryIds: ids, field: 'remark', value: 'x' }).success,
     ).toBe(false);
+  });
+});
+
+/* [SCR-07] / [SCR-08] deferred save — DECISIONS.md, 2026-08-19. The refusals below are the contract:
+   every one of them is an ambiguity the server would otherwise have to resolve by array order. */
+
+describe('bookSettingsSaveInputSchema', () => {
+  const a = 'a'.repeat(24);
+  const b = 'b'.repeat(24);
+
+  it('defaults both change groups, so a bare rename is still a valid save', () => {
+    const parsed = bookSettingsSaveInputSchema.safeParse({ name: 'Groceries' });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.members).toEqual({ add: [], setRole: [], remove: [] });
+    expect(parsed.success && parsed.data.invites).toEqual({ send: [], revoke: [] });
+  });
+
+  it('keeps perms tri-state — absent is not the same command as null', () => {
+    const untouched = bookSettingsSaveInputSchema.safeParse({ name: 'Groceries' });
+    // Absent must stay absent. Were it defaulted to null the server could not tell "do not touch the
+    // matrix" from "re-attach this book to its account's", and every rename would re-attach.
+    expect(untouched.success && 'perms' in untouched.data).toBe(false);
+    expect(bookSettingsSaveInputSchema.safeParse({ perms: null }).success).toBe(true);
+  });
+
+  it('refuses the same member in two intents, whichever pair', () => {
+    expect(
+      bookSettingsSaveInputSchema.safeParse({
+        members: { setRole: [{ userId: a, role: 'EDITOR' }], remove: [a] },
+      }).success,
+    ).toBe(false);
+    expect(
+      bookSettingsSaveInputSchema.safeParse({
+        members: { add: [{ userId: a, role: null }], remove: [a] },
+      }).success,
+    ).toBe(false);
+    // Two different people in two different intents is the ordinary case and must still pass.
+    expect(
+      bookSettingsSaveInputSchema.safeParse({
+        members: { setRole: [{ userId: a, role: 'EDITOR' }], remove: [b] },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('refuses a duplicate inside one list', () => {
+    expect(
+      bookSettingsSaveInputSchema.safeParse({
+        members: { setRole: [{ userId: a, role: 'EDITOR' }, { userId: a, role: 'VIEWER' }] },
+      }).success,
+    ).toBe(false);
+    expect(bookSettingsSaveInputSchema.safeParse({ invites: { revoke: [a, a] } }).success).toBe(
+      false,
+    );
+  });
+
+  it('caps each list', () => {
+    const many = Array.from({ length: MAX_MEMBER_OPS_PER_SAVE + 1 }, (_, i) =>
+      (i % 2 === 0 ? 'a' : 'b') + String(i).padStart(23, '0'),
+    );
+    expect(bookSettingsSaveInputSchema.safeParse({ members: { remove: many } }).success).toBe(false);
+  });
+
+  it('still accepts role: null, which reverts to the inherited account role rather than removing', () => {
+    const parsed = bookSettingsSaveInputSchema.safeParse({
+      members: { setRole: [{ userId: a, role: null }] },
+    });
+    expect(parsed.success).toBe(true);
+  });
+});
+
+describe('accountManageSaveInputSchema', () => {
+  const a = 'a'.repeat(24);
+  const b = 'b'.repeat(24);
+
+  it('has no way to add a member — [LOG-15] puts consent on the invitation', () => {
+    const parsed = accountManageSaveInputSchema.safeParse({
+      members: { add: [{ userId: a, role: 'EDITOR' }] },
+    });
+    // The key is stripped rather than rejected (zod objects are non-strict here, matching every
+    // other input schema), so the assertion is that it cannot reach the handler.
+    expect(parsed.success && 'add' in parsed.data.members).toBe(false);
+  });
+
+  it('refuses the same member, or the same invitation, in two intents', () => {
+    expect(
+      accountManageSaveInputSchema.safeParse({
+        members: { setRole: [{ userId: a, role: 'ADMIN' }], remove: [a] },
+      }).success,
+    ).toBe(false);
+    expect(
+      accountManageSaveInputSchema.safeParse({
+        invites: { setRole: [{ inviteId: a, role: 'ADMIN' }], revoke: [a] },
+      }).success,
+    ).toBe(false);
+    expect(
+      accountManageSaveInputSchema.safeParse({
+        members: { setRole: [{ userId: a, role: 'ADMIN' }], remove: [b] },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('carries the name and matrix from the same bar, so one save commits both', () => {
+    const parsed = accountManageSaveInputSchema.safeParse({
+      name: 'Sharma Family',
+      members: { remove: [a] },
+    });
+    expect(parsed.success && parsed.data.name).toBe('Sharma Family');
+    expect(parsed.success && parsed.data.members.remove).toEqual([a]);
+  });
+});
+
+/* Found by contract-guardian before v0.27.0 shipped: the batch schema inherited `initial` from
+   `updateAccountInputSchema`, which the live route hand-excludes because the server owns it. */
+describe('accountManageSaveInputSchema — the server owns the initial', () => {
+  it('cannot set the account initial, independently or at all', () => {
+    const parsed = accountManageSaveInputSchema.safeParse({ name: 'Sharma Family', initial: 'Z' });
+    expect(parsed.success).toBe(true);
+    // Stripped, not rejected — so a stale client cannot produce a chip that disagrees with the name.
+    expect(parsed.success && 'initial' in parsed.data).toBe(false);
   });
 });

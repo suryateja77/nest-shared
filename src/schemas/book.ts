@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import {
+  MAX_INVITES_PER_ACCOUNT,
+  MAX_MEMBER_OPS_PER_SAVE,
   monthString,
   moneyTotal,
   objectId,
@@ -7,6 +9,7 @@ import {
   signedMoneyTotal,
   timestampsSchema,
 } from './common.js';
+import { accountInviteSchema, createBookInviteInputSchema } from './invite.js';
 import { permissionsSchema, rolePermissionsSchema, roleSchema } from './role.js';
 
 /**
@@ -307,8 +310,14 @@ export type CreateBookInput = z.infer<typeof createBookInputSchema>;
  *   they decide who can read a family's money. They are authorized on `Book.createdBy` alone, which
  *   is a *different and narrower* gate than the `canEditBook` that admits everything else in this
  *   schema (`[LOG-17]`: account creator ∨ book creator ∨ the `bookSettings` capability). Folding
- *   them in here would silently hand book membership to every `bookSettings` holder — so they get
- *   their own routes, with their own resolver. See `bookMemberInputSchema` below.
+ *   them in here would silently hand book membership to every `bookSettings` holder.
+ *
+ *   **They are now expressible on this route, and that risk is unchanged — see
+ *   `bookSettingsSaveInputSchema`, which extends this schema for `[SCR-07]`'s deferred save.** What
+ *   moved is the transport, not the gate: `edit`, `grant` and `revoke` are resolved separately and
+ *   each staged item is authorized on its own, so a `bookSettings` holder still reaches the docked
+ *   bar and still has `members.add` refused. This schema itself stays membership-free, which is what
+ *   keeps `updateBookLabels`' `[OVL-24]` undo path and every other caller unable to touch access.
  * - **`tint`** and **`sub`** are acquired at creation from the book count and the chosen preset;
  *   `[OVL-09]` offers no control for either and `[SCR-07]` does not edit them.
  *
@@ -778,3 +787,130 @@ export type SharedBookSummary = z.infer<typeof sharedBookSummarySchema>;
  */
 export const booksQuerySchema = z.object({ month: monthString });
 export type BooksQuery = z.infer<typeof booksQuerySchema>;
+
+/* --------------------------------------------------------------------------------------------
+   [SCR-07]'s deferred save — DECISIONS.md, 2026-08-19
+   -------------------------------------------------------------------------------------------- */
+
+/** One member's role, restated as a batch item — `userId` travels in the body because a batch has no
+ *  path parameter to carry it. `null` keeps `bookMemberRoleInputSchema`'s meaning: revert to the
+ *  inherited account role, which is **not** removal. */
+export const bookMemberRoleChangeSchema = z.object({
+  userId: objectId,
+  role: roleSchema.nullable(),
+});
+export type BookMemberRoleChange = z.infer<typeof bookMemberRoleChangeSchema>;
+
+/** The three membership operations `[SCR-07]` can stage. Removal is its own list rather than a role
+ *  of `null`, so an omitted field can never read as "take their access away". */
+export const bookMemberChangesSchema = z.object({
+  /** Account members added to this book — `[OVL-09]` step 2's picker, after creation. `kind` is
+   *  never accepted from the body: a client-set `guest` would bypass the account-membership check
+   *  and the consent that lives on an invitation. */
+  add: z.array(bookMemberInputSchema).max(MAX_MEMBER_OPS_PER_SAVE).default([]),
+  setRole: z.array(bookMemberRoleChangeSchema).max(MAX_MEMBER_OPS_PER_SAVE).default([]),
+  /** Refused for `book.createdBy` — see `isBookCreator`. */
+  remove: z.array(objectId).max(MAX_MEMBER_OPS_PER_SAVE).default([]),
+});
+export type BookMemberChanges = z.infer<typeof bookMemberChangesSchema>;
+
+/** Guest invitations staged on `[SCR-07]` — `[OVL-06]`, book-scoped. */
+export const bookInviteChangesSchema = z.object({
+  send: z.array(createBookInviteInputSchema).max(MAX_INVITES_PER_ACCOUNT).default([]),
+  revoke: z.array(objectId).max(MAX_INVITES_PER_ACCOUNT).default([]),
+});
+export type BookInviteChanges = z.infer<typeof bookInviteChangesSchema>;
+
+const EMPTY_BOOK_MEMBER_CHANGES: BookMemberChanges = { add: [], setRole: [], remove: [] };
+const EMPTY_BOOK_INVITE_CHANGES: BookInviteChanges = { send: [], revoke: [] };
+
+/**
+ * `PATCH /books/:bookId` — **everything `[SCR-07]`'s docked Save commits, in one request.**
+ *
+ * `updateBookInputSchema` widened rather than a second `/settings` route beside it: that PATCH
+ * already *is* this screen's Save, and minting a parallel endpoint would leave two ways to save one
+ * screen with only one of them ever fully right. Every field stays optional, so `updateBookLabels`'
+ * `[OVL-24]` undo path keeps sending a bare `{ categories }` and is unaffected.
+ *
+ * **The comment on `updateBookInputSchema` used to say membership was excluded because folding it in
+ * *"would silently hand book membership to every `bookSettings` holder"*. That risk is real and is
+ * why this is not a widening of one gate.** The route resolves `edit`, `grant` and `revoke`
+ * separately and gates each staged item on its own — a `bookSettings` holder reaches the docked bar
+ * legitimately, and their `members.add` is still refused. The authority model is unchanged; only the
+ * transport is.
+ *
+ * **Operations, not a desired end state.** The client holds `[LOG-04]`'s snapshot beside its draft,
+ * so it can name exactly what moved — the same reason `toUpdateInput` sends only changed keys. A
+ * payload describing the whole roster would make every save a full overwrite from a snapshot taken
+ * when the screen opened, silently removing anyone a second admin added meanwhile.
+ *
+ * **`perms` is tri-state.** Absent means *not touched*; `null` means *re-attach to the account's
+ * matrix* (`bookPermissionsInputSchema`'s meaning, preserved); an object means *this book overrides*.
+ * Collapsing absent into `null` would re-attach a detached book every time somebody saved a rename.
+ */
+export const bookSettingsSaveInputSchema = updateBookInputSchema
+  .extend({
+    members: bookMemberChangesSchema.default(EMPTY_BOOK_MEMBER_CHANGES),
+    invites: bookInviteChangesSchema.default(EMPTY_BOOK_INVITE_CHANGES),
+    perms: rolePermissionsSchema.nullable().optional(),
+  })
+  /**
+   * **One person, one intent per save.** A batch naming the same member twice has no defensible
+   * order: remove-then-set-role resurrects them at a new role, set-role-then-remove discards the
+   * role write, and both are reachable from a UI bug rather than from anything a user could mean.
+   * Refusing the pair is the only reading that cannot silently pick the wrong one — and it makes the
+   * ambiguity unrepresentable at the contract rather than resolved by array order.
+   */
+  .refine(
+    (value) => {
+      const touched = [
+        ...value.members.add.map((member) => member.userId),
+        ...value.members.setRole.map((change) => change.userId),
+        ...value.members.remove,
+      ];
+      return new Set(touched).size === touched.length;
+    },
+    { message: 'Each member may appear in only one change per save', path: ['members'] },
+  )
+  .refine(
+    (value) => {
+      const touched = value.invites.revoke;
+      return new Set(touched).size === touched.length;
+    },
+    { message: 'Each invitation may be revoked only once per save', path: ['invites', 'revoke'] },
+  );
+export type BookSettingsSaveInput = z.infer<typeof bookSettingsSaveInputSchema>;
+
+/**
+ * What a **client** may send — the same schema read from the input side, before zod applies the
+ * `members`/`invites` defaults.
+ *
+ * Two names for one schema because the two sides genuinely differ: a handler holding a parsed body
+ * can rely on `members.add` existing, while a caller building one must be able to omit both groups
+ * entirely — a rename should put a rename on the wire and nothing else. Typing the request with the
+ * *output* type forces every caller to send empty groups they do not mean, which is how `[OVL-24]`'s
+ * bare `{ categories }` undo path would have been broken by a type rather than by a decision.
+ */
+export type BookSettingsSaveBody = z.input<typeof bookSettingsSaveInputSchema>;
+
+/**
+ * What `PATCH /books/:bookId` answers with — the whole of what `[SCR-07]` renders, re-read from the
+ * saved document.
+ *
+ * **`book` is re-resolved, never echoed from the authorization read.** This is the one write that can
+ * move the caller's own `myCapabilities` *and* `myAuthority` — detaching the matrix or changing your
+ * own book role changes what you may do next — and `PATCH /books/:bookId/perms` already argues
+ * exactly this. Returning a stale projection would leave the screen drawing controls the next request
+ * refuses.
+ *
+ * The other three lists travel so the client can **re-snapshot** without a second round trip.
+ * `[LOG-04]` has Save clear the snapshot, and a snapshot rebuilt from a separate refetch is a
+ * snapshot of a different moment.
+ */
+export const bookSettingsSaveResultSchema = z.object({
+  book: bookSummarySchema,
+  members: z.array(bookMemberSummarySchema),
+  invites: z.array(accountInviteSchema),
+  perms: bookPermissionsViewSchema,
+});
+export type BookSettingsSaveResult = z.infer<typeof bookSettingsSaveResultSchema>;

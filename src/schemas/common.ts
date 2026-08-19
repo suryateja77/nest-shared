@@ -132,3 +132,32 @@ export const timestampsSchema = z.object({
   createdAt: isoDateString,
   updatedAt: isoDateString,
 });
+
+/**
+ * Family scale, not an arbitrary round number: `[SCR-04]`'s account rows read `4 MEMBERS`, and
+ * `[OVL-17]`'s delete confirm names the member count in a sentence. A household that needs more
+ * than this is not the product `PRODUCT-SPEC.md` describes.
+ *
+ * **Lives here rather than in `account.ts` because `book.ts` needs it too** — `[SCR-07]`'s staged
+ * guest invitations count against the same account-wide ceiling. `account.ts` already imports
+ * `book.ts` for `bookStatsSchema`, so importing back would be a module cycle, and a cycle between
+ * two files of `const` schema definitions fails at initialisation rather than at type-check.
+ */
+export const MAX_INVITES_PER_ACCOUNT = 20;
+
+/**
+ * How many member operations one deferred save may carry **per list** — `[SCR-07]` and `[SCR-08]`,
+ * 2026-08-19.
+ *
+ * **Per list, not per save**, so one request can carry up to three times this across `add`,
+ * `setRole` and `remove`. Deliberate: each list is authorized on a different gate and performs a
+ * different write, so a shared budget would let a long `setRole` starve a `remove` the caller is
+ * equally entitled to. Stated because the name reads like a total. Raised by
+ * `code-standards-reviewer`.
+ *
+ * Not tidiness: each item is authorized and applied individually, and on the account side each
+ * removal additionally purges guest rows across every book in the account — so an uncapped array is
+ * unbounded write amplification from a single request. Shared by both screens' batches, so it lives
+ * beside `MAX_INVITES_PER_ACCOUNT` for the same module-cycle reason.
+ */
+export const MAX_MEMBER_OPS_PER_SAVE = 50;
