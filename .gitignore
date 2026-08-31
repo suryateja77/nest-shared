@@ -5,3 +5,6 @@ coverage
 .env.*
 !.env.example
 *.log
+
+# graphify knowledge graph output (regenerated; see .claude/graphify/)
+graphify-out
