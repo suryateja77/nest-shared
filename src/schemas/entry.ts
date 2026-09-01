@@ -39,10 +39,22 @@ export const entrySchema = z
     /**
      * The ledger's grouping key ([SCR-06]).
      *
-     * **Server-assigned at creation and never editable.** [OVL-08] has no date picker — its record
-     * line is display-only — the prototype stamps `d`/`t` with the current clock and explicitly
-     * preserves both across an edit, and Munim's `chatCreateEntry` takes no date either. Stored
-     * separately from `createdAt` because grouping is a local-calendar operation, not an instant.
+     * **The client may now set it, and that is a deliberate override of the frozen design.**
+     * `[OVL-08]` has no date picker — its record line is display-only, the prototype stamps `d`/`t`
+     * from the current clock and explicitly preserves both across an edit — and the user asked for
+     * one after device testing: *"give the ability for the user to also select the entry date and
+     * time … Defaults to current date and time."* `DECISIONS.md` records it; the export will keep
+     * re-asserting the original.
+     *
+     * Still **wall clock in the service's `APP_TIMEZONE`**, not an instant, and stored separately
+     * from `createdAt` for that reason: grouping a ledger by day is a local-calendar operation. That
+     * is also why a client can send this at all without a zone negotiation — `dateOnlyString` and
+     * `timeOfDayString` are zone-less by construction, so the value the user picks in a date input
+     * *is* the value stored.
+     *
+     * The bound that is **not** in this schema and must not be moved here: an entry may not be dated
+     * in the future. That compares against the server's clock in its own zone, which no client-side
+     * schema can do — `entryRules.assertEntryDateIsNotFuture` owns it.
      */
     date: dateOnlyString,
     /** 24-hour `HH:mm`. `9:41 PM` is display formatting ([LOG-06] timeTok), not storage. */
@@ -94,32 +106,55 @@ export type Entry = z.infer<typeof entrySchema>;
  * - `createdBy` / `updatedBy` — derived from the authenticated session. Accepting them from the
  *   client would let a member attribute spending to someone else, which Insights then reports
  *   ([SCR-11] "WHO SPENT IT").
- * - `date` / `time` — stamped from the clock. [OVL-08] offers no way to set them.
+ *
+ * **`date` and `time` used to be on that list and no longer are** — `[OVL-08]` has a date and time
+ * picker by the user's decision. They stay **optional**, which is what keeps the frozen behaviour as
+ * the default: omit them and the server stamps its own clock exactly as before, which is what Munim's
+ * `chatCreateEntry` will do when it lands (`[LOG-11]` parses no date) and what any client that has
+ * not been updated does. `.partial()` is applied to the pair rather than the schema, so every other
+ * field stays required on create.
+ *
+ * They are **not** a way to smuggle authorship: `createdBy` is still session-derived, so a backdated
+ * entry still says who actually wrote it.
  */
-export const createEntryInputSchema = entrySchema.omit({
-  id: true,
-  bookId: true,
-  createdAt: true,
-  updatedAt: true,
-  createdBy: true,
-  updatedBy: true,
-  date: true,
-  time: true,
-});
+export const createEntryInputSchema = entrySchema
+  .omit({
+    id: true,
+    bookId: true,
+    createdAt: true,
+    updatedAt: true,
+    createdBy: true,
+    updatedBy: true,
+  })
+  .partial({ date: true, time: true });
 export type CreateEntryInput = z.infer<typeof createEntryInputSchema>;
 
 /**
- * Same server-owned fields.
+ * **`updateEntryInputSchema` is deleted, and editing reuses `createEntryInputSchema` above.**
  *
- * **`bookId` stays omitted even though moving an entry between books is now designed.** `[LOG-21]`
- * added it, but not as a field a client may set: a move is *"a copy plus a hard delete of the
- * originals"*, so the entry that lands in the destination is a **new** document with a new id, and
- * the original is removed rather than repointed. Nothing anywhere re-parents an entry by writing
- * `bookId`, and accepting one here would be a second claim about which book is being written to —
- * the mistake `createEntryInputSchema` omits it to prevent. See `bulkTransferEntriesInputSchema`.
+ * It was `createEntryInputSchema.partial()` and had never had a caller. When `[OVL-08]`'s edit mode
+ * was built it turned out to be the wrong shape, not merely an unused one: making every field
+ * optional gives PATCH-merge semantics, under which *"the user cleared the remark"* and *"the client
+ * did not mention the remark"* arrive as the same request — so a cleared remark, category or custom
+ * value could never be saved. The bug would have been silent and permanent.
+ *
+ * `[OVL-08]` is **one sheet for both** — *"the same sheet edits an existing entry, pre-filled, with
+ * the save label changed"* — so it always submits every editable field, which is a **replacement**.
+ * The route is therefore `PUT /books/:bookId/entries/:entryId` taking this same body, and the server
+ * unsets whatever the body omits. Two names for one shape is how the two drift apart; `roleSchema`'s
+ * note makes the same argument about `assignableRoleSchema`.
+ *
+ * `date` and `time` mean different things on the two verbs, and both readings are "leave it alone":
+ * absent on **create** the server stamps its clock, absent on **update** it keeps what the entry
+ * already has — which is the prototype's own rule (*"preserves `d`/`t` across an edit"*), now the
+ * behaviour a client gets by saying nothing rather than the only behaviour available.
+ *
+ * `bookId` stays omitted on both. `[LOG-21]` made moving an entry between books designed, but not as
+ * a field a client may set: a move is *"a copy plus a hard delete of the originals"*, so the entry
+ * that lands in the destination is a **new** document with a new id, and the original is removed
+ * rather than repointed. Accepting one here would be a second claim about which book is being written
+ * to. See `bulkTransferEntriesInputSchema`.
  */
-export const updateEntryInputSchema = createEntryInputSchema.partial();
-export type UpdateEntryInput = z.infer<typeof updateEntryInputSchema>;
 
 /**
  * [OVL-04]'s **DATE RANGE** chips, verbatim from the prototype's `RANGES`

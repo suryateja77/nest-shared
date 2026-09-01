@@ -44,7 +44,6 @@ import {
   entryCountSchema,
   entrySchema,
   MAX_BULK_ENTRIES,
-  updateEntryInputSchema,
 } from './entry.js';
 import { MAX_QUERY_LIST_VALUES } from './http.js';
 import { createDueInputSchema, dueSchema } from './due.js';
@@ -367,19 +366,40 @@ describe('createEntryInputSchema', () => {
     // The book is the `:bookId` the server already resolved and authorized. A body copy would be a
     // second, independent claim about which book is being written to — `nest-authz`'s "trusting
     // bookId from the body on create". zod strips unknown keys, so this asserts the *result*.
-    const parsed = createEntryInputSchema.parse(validEntry);
+    const parsed = createEntryInputSchema.parse({ ...validEntry, bookId: OID });
     expect(parsed).not.toHaveProperty('bookId');
-    expect(updateEntryInputSchema.parse({ bookId: OID })).not.toHaveProperty('bookId');
   });
 
-  it('does not accept a client-supplied date or time', () => {
-    // [OVL-08] has no date picker; the prototype stamps the clock and preserves both on edit.
-    const created = createEntryInputSchema.parse(validEntry);
-    expect(created).not.toHaveProperty('date');
-    expect(created).not.toHaveProperty('time');
-    const updated = updateEntryInputSchema.parse({ date: '2026-01-01', time: '10:00' });
-    expect(updated).not.toHaveProperty('date');
-    expect(updated).not.toHaveProperty('time');
+  it('carries a client-supplied date and time', () => {
+    // The user's device-test decision — `[OVL-08]` has a date and time picker now. Both are
+    // wall-clock and zone-less, so the value the picker produces is the value stored.
+    const parsed = createEntryInputSchema.parse({
+      ...validEntry,
+      date: '2026-01-01',
+      time: '10:00',
+    });
+    expect(parsed.date).toBe('2026-01-01');
+    expect(parsed.time).toBe('10:00');
+  });
+
+  it('leaves date and time optional, so an older client still gets the stamped clock', () => {
+    // The frozen behaviour is the default rather than the only option: omit them and the server
+    // stamps `APP_TIMEZONE`'s clock, which is what Munim's parser will do ([LOG-11] reads no date).
+    const withoutStamp: Record<string, unknown> = { ...validEntry };
+    delete withoutStamp.date;
+    delete withoutStamp.time;
+    const parsed = createEntryInputSchema.parse(withoutStamp);
+    expect(parsed).not.toHaveProperty('date');
+    expect(parsed).not.toHaveProperty('time');
+  });
+
+  it('still refuses a future date only at the service, never here', () => {
+    // Deliberately accepted by the schema. "Not in the future" is a comparison against the server's
+    // clock in its own zone, which a schema shared with the client cannot make — `entryRules` owns
+    // it, and putting a bound here would let a browser's clock decide what the ledger accepts.
+    expect(createEntryInputSchema.parse({ ...validEntry, date: '2999-01-01' }).date).toBe(
+      '2999-01-01',
+    );
   });
 
   it('rejects customValues keyed by anything but a custom-field id', () => {
