@@ -9,3 +9,4 @@ export * from './schemas/reminder.js';
 export * from './schemas/invite.js';
 export * from './schemas/profile.js';
 export * from './schemas/auth.js';
+export * from './schemas/bootstrap.js';

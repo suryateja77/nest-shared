@@ -35,6 +35,7 @@ import {
   moveBookInputSchema,
   updateBookInputSchema,
 } from './book.js';
+import { bootstrapQuerySchema, bootstrapSchema } from './bootstrap.js';
 import {
   bulkDeleteEntriesInputSchema,
   bulkLabelEntriesInputSchema,
@@ -662,7 +663,9 @@ describe('permissions', () => {
     expect(updateAccountInputSchema.safeParse({ name: '   ' }).success).toBe(false);
     expect(updateAccountInputSchema.safeParse({ name: '\t\n ' }).success).toBe(false);
 
-    expect(updateAccountInputSchema.parse({ name: '  Sharma Family  ' }).name).toBe('Sharma Family');
+    expect(updateAccountInputSchema.parse({ name: '  Sharma Family  ' }).name).toBe(
+      'Sharma Family',
+    );
 
     // Still a PATCH: every field stays optional, and an empty patch is not an error.
     expect(updateAccountInputSchema.safeParse({}).success).toBe(true);
@@ -733,16 +736,16 @@ describe('accountSummarySchema', () => {
     createdBy: OID,
     members: [{ userId: OID, name: 'Ananya Sharma', role: 'ADMIN' as const }],
     myCapabilities: ROLE_PERMISSION_SEED.ADMIN,
-  /** `[OVL-18]`'s five rows plus `[SCR-07]`'s two membership gates, resolved server-side. */
-  myAuthority: {
-    edit: true,
-    duplicate: true,
-    move: true,
-    delete: true,
-    leave: false,
-    grant: true,
-    revoke: true,
-  },
+    /** `[OVL-18]`'s five rows plus `[SCR-07]`'s two membership gates, resolved server-side. */
+    myAuthority: {
+      edit: true,
+      duplicate: true,
+      move: true,
+      delete: true,
+      leave: false,
+      grant: true,
+      revoke: true,
+    },
     stats: { cin: 120000, cout: 37480, bal: 82520 },
     bookCount: 3,
   };
@@ -1242,16 +1245,16 @@ describe('bookSummarySchema — a withheld book is null, never zero [GAP-2]', ()
       manageMembers: false,
       bookSettings: false,
     },
-  /** `[OVL-18]`'s five rows plus `[SCR-07]`'s two membership gates, resolved server-side. */
-  myAuthority: {
-    edit: true,
-    duplicate: true,
-    move: true,
-    delete: true,
-    leave: false,
-    grant: true,
-    revoke: true,
-  },
+    /** `[OVL-18]`'s five rows plus `[SCR-07]`'s two membership gates, resolved server-side. */
+    myAuthority: {
+      edit: true,
+      duplicate: true,
+      move: true,
+      delete: true,
+      leave: false,
+      grant: true,
+      revoke: true,
+    },
   };
 
   it('accepts null figures for a caller whose per-book viewEntries is false', () => {
@@ -1335,7 +1338,11 @@ describe('duplicateBookInputSchema — [OVL-19]', () => {
   };
 
   it('accepts a name and all six flags', () => {
-    const parsed = duplicateBookInputSchema.safeParse({ name: 'Renovation copy', tint: '#B4472C', copy });
+    const parsed = duplicateBookInputSchema.safeParse({
+      name: 'Renovation copy',
+      tint: '#B4472C',
+      copy,
+    });
     expect(parsed.success && parsed.data.copy.members).toBe(true);
   });
 
@@ -1349,15 +1356,20 @@ describe('duplicateBookInputSchema — [OVL-19]', () => {
       opening: false,
       reminders: false,
     };
-    expect(duplicateBookInputSchema.safeParse({ name: 'X', tint: '#B4472C', copy: withoutMembers }).success).toBe(
-      false,
-    );
+    expect(
+      duplicateBookInputSchema.safeParse({ name: 'X', tint: '#B4472C', copy: withoutMembers })
+        .success,
+    ).toBe(false);
   });
 
   it('holds the copy to the same name bounds as the original', () => {
     // Cut from `bookBaseSchema`, so a copy can never take a name the source could not hold.
-    expect(duplicateBookInputSchema.safeParse({ name: '', tint: '#B4472C', copy }).success).toBe(false);
-    expect(duplicateBookInputSchema.safeParse({ name: 'x'.repeat(61), tint: '#B4472C', copy }).success).toBe(false);
+    expect(duplicateBookInputSchema.safeParse({ name: '', tint: '#B4472C', copy }).success).toBe(
+      false,
+    );
+    expect(
+      duplicateBookInputSchema.safeParse({ name: 'x'.repeat(61), tint: '#B4472C', copy }).success,
+    ).toBe(false);
   });
 
   it('requires a tint, held to the same format the original is', () => {
@@ -1523,7 +1535,12 @@ describe('bookSettingsSaveInputSchema', () => {
   it('refuses a duplicate inside one list', () => {
     expect(
       bookSettingsSaveInputSchema.safeParse({
-        members: { setRole: [{ userId: a, role: 'EDITOR' }, { userId: a, role: 'VIEWER' }] },
+        members: {
+          setRole: [
+            { userId: a, role: 'EDITOR' },
+            { userId: a, role: 'VIEWER' },
+          ],
+        },
       }).success,
     ).toBe(false);
     expect(bookSettingsSaveInputSchema.safeParse({ invites: { revoke: [a, a] } }).success).toBe(
@@ -1532,10 +1549,13 @@ describe('bookSettingsSaveInputSchema', () => {
   });
 
   it('caps each list', () => {
-    const many = Array.from({ length: MAX_MEMBER_OPS_PER_SAVE + 1 }, (_, i) =>
-      (i % 2 === 0 ? 'a' : 'b') + String(i).padStart(23, '0'),
+    const many = Array.from(
+      { length: MAX_MEMBER_OPS_PER_SAVE + 1 },
+      (_, i) => (i % 2 === 0 ? 'a' : 'b') + String(i).padStart(23, '0'),
     );
-    expect(bookSettingsSaveInputSchema.safeParse({ members: { remove: many } }).success).toBe(false);
+    expect(bookSettingsSaveInputSchema.safeParse({ members: { remove: many } }).success).toBe(
+      false,
+    );
   });
 
   it('still accepts role: null, which reverts to the inherited account role rather than removing', () => {
@@ -1595,5 +1615,74 @@ describe('accountManageSaveInputSchema — the server owns the initial', () => {
     expect(parsed.success).toBe(true);
     // Stripped, not rejected — so a stale client cannot produce a chip that disagrees with the name.
     expect(parsed.success && 'initial' in parsed.data).toBe(false);
+  });
+});
+
+describe('bootstrapSchema', () => {
+  /**
+   * `[SCR-00]`'s boot payload. The composition itself needs no assertion — every field *is* the
+   * schema the dedicated route returns, and `nest-data-service/src/routes/bootstrap.test.ts` parses
+   * real responses through this schema via Fastify's serializer, including two cases that assert the
+   * payload equals what `GET /accounts` and `GET /accounts/:accountId/books` return field for field.
+   * Restating a thirty-field `bookSummary` fixture here would re-test zod's object composition.
+   *
+   * What is worth pinning here is the part that is a **decision** rather than a composition: the two
+   * nullable fields, and the fact that `books` has three distinguishable states. That is the bit a
+   * future edit could quietly collapse.
+   */
+  it('distinguishes all three states of `books`', () => {
+    const books = bootstrapSchema.shape.books;
+
+    // `null` — "not answered here, ask the route". The caller is in no account, or holds no
+    // `viewEntries` on the chosen one.
+    expect(books.safeParse(null).success).toBe(true);
+    // `[]` — a settled "this account has no books", which `[LOG-07]` renders as NO BOOKS YET with a
+    // create CTA. Collapsing this into `null` would lose the empty state; collapsing `null` into
+    // this would show a confident, wrong empty state to someone who was refused the list.
+    expect(books.safeParse([]).success).toBe(true);
+    // Anything else is still a real book list.
+    expect(books.safeParse(undefined).success).toBe(false);
+  });
+
+  it('allows a caller who is in no account at all', () => {
+    // Not an error state: `provisionPersonalAccount` covers sign-up, but every account a user is in
+    // can subsequently be left or deleted, and `[SCR-04]` has an empty branch for it.
+    expect(bootstrapSchema.shape.accountId.safeParse(null).success).toBe(true);
+    expect(bootstrapSchema.shape.accounts.safeParse([]).success).toBe(true);
+  });
+
+  it('rejects an accountId that is not an ObjectId', () => {
+    expect(bootstrapSchema.shape.accountId.safeParse('not-an-id').success).toBe(false);
+  });
+});
+
+describe('bootstrapQuerySchema', () => {
+  it('requires a month', () => {
+    // `bootstrapSchema` makes `bookSummary.month` non-optional, so without one the contracted
+    // response is unsatisfiable — the same reason `booksQuerySchema` requires it.
+    expect(bootstrapQuerySchema.safeParse({}).success).toBe(false);
+    expect(bootstrapQuerySchema.safeParse({ month: '2026-13' }).success).toBe(false);
+    expect(bootstrapQuerySchema.safeParse({ month: '2026-07' }).success).toBe(true);
+  });
+
+  it('treats the account hint as optional', () => {
+    // A first-ever load has nothing remembered, so its absence is the ordinary case rather than a
+    // malformed request.
+    expect(bootstrapQuerySchema.safeParse({ month: '2026-07' }).success).toBe(true);
+    expect(bootstrapQuerySchema.safeParse({ month: '2026-07', account: OID }).success).toBe(true);
+  });
+
+  it('accepts a malformed hint rather than refusing the boot', () => {
+    /**
+     * The hint is read from `localStorage`, so anything on the device can write it — and rejecting a
+     * malformed one at the boundary would answer `400` on every boot attempt, which `[SCR-00b]`'s
+     * *Try again* would resend unchanged. Accepting it is safe because the handler only ever compares
+     * it with `===` against ids from the caller's own membership list; it never reaches Mongo.
+     */
+    expect(bootstrapQuerySchema.safeParse({ month: '2026-07', account: 'x' }).success).toBe(true);
+    // The length cap is the one bound worth keeping.
+    expect(
+      bootstrapQuerySchema.safeParse({ month: '2026-07', account: 'x'.repeat(65) }).success,
+    ).toBe(false);
   });
 });
