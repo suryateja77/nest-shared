@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   dateOnlyString,
+  isoDateString,
   moneyAmount,
   objectId,
   timeOfDayString,
@@ -111,8 +112,9 @@ export type Entry = z.infer<typeof entrySchema>;
  * picker by the user's decision. They stay **optional**, which is what keeps the frozen behaviour as
  * the default: omit them and the server stamps its own clock exactly as before, which is what Munim's
  * `chatCreateEntry` will do when it lands (`[LOG-11]` parses no date) and what any client that has
- * not been updated does. `.partial()` is applied to the pair rather than the schema, so every other
- * field stays required on create.
+ * not been updated does. `.partial()` is applied to the pair rather than the schema, so no other
+ * field's requiredness changes — `remark`, `category`, `paymentMode`, `customValues` and `attachment`
+ * were already optional on `entrySchema` and stay that way.
  *
  * They are **not** a way to smuggle authorship: `createdBy` is still session-derived, so a backdated
  * entry still says who actually wrote it.
@@ -130,31 +132,44 @@ export const createEntryInputSchema = entrySchema
 export type CreateEntryInput = z.infer<typeof createEntryInputSchema>;
 
 /**
- * **`updateEntryInputSchema` is deleted, and editing reuses `createEntryInputSchema` above.**
+ * `PUT /books/:bookId/entries/:entryId` — `[OVL-08]` in edit mode.
  *
- * It was `createEntryInputSchema.partial()` and had never had a caller. When `[OVL-08]`'s edit mode
- * was built it turned out to be the wrong shape, not merely an unused one: making every field
- * optional gives PATCH-merge semantics, under which *"the user cleared the remark"* and *"the client
- * did not mention the remark"* arrive as the same request — so a cleared remark, category or custom
- * value could never be saved. The bug would have been silent and permanent.
+ * **A replacement, not a patch**, and the same body as create plus one precondition. It was briefly
+ * `createEntryInputSchema.partial()` with no caller, and that shape was wrong rather than merely
+ * unused: `.partial()` gives merge semantics, under which *"the user cleared the remark"* and *"the
+ * client did not mention the remark"* arrive as the same request — so a cleared remark, category or
+ * custom value could never be saved, silently and permanently. `[OVL-08]` is *"the same sheet …
+ * pre-filled, with the save label changed"* and submits every editable field, so the honest shape is
+ * a replacement: the server `$unset`s what the body omits.
  *
- * `[OVL-08]` is **one sheet for both** — *"the same sheet edits an existing entry, pre-filled, with
- * the save label changed"* — so it always submits every editable field, which is a **replacement**.
- * The route is therefore `PUT /books/:bookId/entries/:entryId` taking this same body, and the server
- * unsets whatever the body omits. Two names for one shape is how the two drift apart; `roleSchema`'s
- * note makes the same argument about `assignableRoleSchema`.
+ * (`Due` and `Reminder` face the same question and answer it the other way — their clearable fields
+ * are `.nullable()`, so a `PATCH` can still express "clear this". Either is correct; what is not is
+ * an optional field under merge semantics, which cannot be emptied at all.)
  *
- * `date` and `time` mean different things on the two verbs, and both readings are "leave it alone":
- * absent on **create** the server stamps its clock, absent on **update** it keeps what the entry
- * already has — which is the prototype's own rule (*"preserves `d`/`t` across an edit"*), now the
- * behaviour a client gets by saying nothing rather than the only behaviour available.
+ * ### `expectedUpdatedAt` — the entry's `updatedAt` as the client last saw it
  *
- * `bookId` stays omitted on both. `[LOG-21]` made moving an entry between books designed, but not as
- * a field a client may set: a move is *"a copy plus a hard delete of the originals"*, so the entry
- * that lands in the destination is a **new** document with a new id, and the original is removed
- * rather than repointed. Accepting one here would be a second claim about which book is being written
- * to. See `bulkTransferEntriesInputSchema`.
+ * A whole-body replacement makes concurrent editing worse than a patch would: the second saver
+ * reverts **every** field the first changed, not just the one they touched, because both sheets hold
+ * a snapshot taken when they opened. Two family members editing one entry is `[GAP-8]`, and the
+ * failure is silent — no error, no `CONFLICT`, and `[LOG-03]` offers no undo for an edit.
+ *
+ * So the client sends back the `updatedAt` it loaded and the server refuses with `CONFLICT` if the
+ * stored one has moved. Optimistic, not a lock: nothing is held, nothing expires, and two people
+ * editing *different* entries never interact.
+ *
+ * **Optional, so the precondition is the client's to offer.** An older client that does not send it
+ * keeps the previous last-write-wins behaviour rather than being refused outright, which is the same
+ * reason `date`/`time` are optional above. `nest-ui` always sends it.
+ *
+ * `bookId` stays omitted, as on create. `[LOG-21]` made moving an entry between books designed, but
+ * not as a field a client may set: a move is *"a copy plus a hard delete of the originals"*, so the
+ * entry that lands in the destination is a **new** document with a new id, and the original is
+ * removed rather than repointed. See `bulkTransferEntriesInputSchema`.
  */
+export const updateEntryInputSchema = createEntryInputSchema.extend({
+  expectedUpdatedAt: isoDateString.optional(),
+});
+export type UpdateEntryInput = z.infer<typeof updateEntryInputSchema>;
 
 /**
  * [OVL-04]'s **DATE RANGE** chips, verbatim from the prototype's `RANGES`

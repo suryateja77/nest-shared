@@ -6,6 +6,7 @@ import {
   MAX_ENTRY_AMOUNT,
   moneyAmount,
   moneyTotal,
+  objectId,
   signedMoneyAmount,
   MAX_INVITES_PER_ACCOUNT,
   MAX_MEMBER_OPS_PER_SAVE,
@@ -43,15 +44,17 @@ import {
   entryAuthorsSchema,
   entryCountSchema,
   entrySchema,
+  updateEntryInputSchema,
   MAX_BULK_ENTRIES,
 } from './entry.js';
 import { MAX_QUERY_LIST_VALUES } from './http.js';
-import { createDueInputSchema, dueSchema } from './due.js';
+import { createDueInputSchema, dueSchema, updateDueInputSchema } from './due.js';
 import {
   createReminderInputSchema,
   reminderRepeatSchema,
   reminderSchema,
   reminderStatusSchema,
+  updateReminderInputSchema,
 } from './reminder.js';
 import {
   CAPABILITY_ORDER,
@@ -351,8 +354,8 @@ describe('createEntryInputSchema', () => {
   });
 
   it('stores time as 24-hour HH:mm, never the display token', () => {
-    // '6:42 PM' is [LOG-06]'s timeTok — display only. Asserted on the field, since the create
-    // input strips time entirely (the server stamps it).
+    // '6:42 PM' is [LOG-06]'s timeTok — display only. Asserted on the primitive rather than through
+    // the create input, which carries `time` as an optional field now that [OVL-08] has a picker.
     expect(timeOfDayString.safeParse('18:42').success).toBe(true);
     expect(timeOfDayString.safeParse('6:42 PM').success).toBe(false);
   });
@@ -368,6 +371,36 @@ describe('createEntryInputSchema', () => {
     // bookId from the body on create". zod strips unknown keys, so this asserts the *result*.
     const parsed = createEntryInputSchema.parse({ ...validEntry, bookId: OID });
     expect(parsed).not.toHaveProperty('bookId');
+  });
+
+  it('refuses an id in upper case, so no comparison can be case-tricked', () => {
+    // `ObjectId.toString()` is lower case, so a case-insensitive `objectId` made every
+    // `id === other._id.toString()` guard bypassable — one of them let a `bulk-move` name its own
+    // book and hard-delete the originals. Rejecting at the boundary is the rule nobody can forget.
+    expect(objectId.safeParse('000000000000000000000a01').success).toBe(true);
+    expect(objectId.safeParse('000000000000000000000A01').success).toBe(false);
+    expect(objectId.safeParse('AABBCCDDEEFF001122334455').success).toBe(false);
+  });
+
+  it('carries the concurrency precondition on an entry update, and leaves it optional', () => {
+    // A whole-body replacement reverts every field the other editor changed, not just the one they
+    // touched — so the client sends back the `updatedAt` it loaded. Optional, so an older client
+    // keeps last-write-wins rather than being refused.
+    const withPrecondition = updateEntryInputSchema.parse({
+      ...validEntry,
+      expectedUpdatedAt: '2026-07-31T13:12:00.000Z',
+    });
+    expect(withPrecondition.expectedUpdatedAt).toBe('2026-07-31T13:12:00.000Z');
+    expect(updateEntryInputSchema.parse(validEntry)).not.toHaveProperty('expectedUpdatedAt');
+  });
+
+  it('keeps a clearable Due or Reminder note nullable, not merely optional', () => {
+    // The `[OVL-08]` bug forestalled: under `.partial()` merge semantics an optional field can never
+    // be emptied, because "cleared" and "unmentioned" are the same request. `null` is what makes the
+    // difference expressible — the idiom `Due.back` already uses.
+    expect(updateDueInputSchema.parse({ notes: null }).notes).toBeNull();
+    expect(updateReminderInputSchema.parse({ notes: null }).notes).toBeNull();
+    expect(updateDueInputSchema.parse({})).not.toHaveProperty('notes');
   });
 
   it('carries a client-supplied date and time', () => {

@@ -1,7 +1,33 @@
 import { z } from 'zod';
 
-/** MongoDB ObjectId, as a 24-char hex string. */
-export const objectId = z.string().regex(/^[a-f\d]{24}$/i, 'Invalid ObjectId');
+/**
+ * MongoDB ObjectId, as a 24-char **lower-case** hex string.
+ *
+ * ### The `/i` this regex used to carry was a live security bug
+ *
+ * `ObjectId.prototype.toString()` always emits lower case, so with a case-insensitive regex every
+ * guard written as `id === other._id.toString()` missed on a case-varied hex — while Mongoose cast
+ * that same hex straight back to the same document. One of those guards was
+ * `resolveDestination`'s refusal of a same-book `bulk-move`: naming the source book in upper case
+ * fell through it, and the route then copied up to `MAX_BULK_ENTRIES` rows and hard-deleted the
+ * originals. Every surviving row carried a new `_id` and the copier as `createdBy`, so `[SCR-11]`'s
+ * WHO SPENT IT credited one person for the whole family's spending — and the undo could not reverse
+ * it, because the restore record stores the id lower case, so *its* call to the same guard matched
+ * and refused. Reproduced against the running route before the fix.
+ *
+ * The call sites were fixed to `.equals()`, which is right and is **not** what this line is for.
+ * Comparing ids as ids is a rule someone has to remember at every new comparison; rejecting the
+ * variance at the boundary is a rule nobody can forget. `auth/devAuth.ts` already makes this argument
+ * for session ids — *"the JWT plugin that replaces this must do the same with its `sub` claim"* — and
+ * it was simply never applied to request-supplied ones.
+ *
+ * **Rejecting rather than normalising with a `.transform()`**, deliberately: a transform turns this
+ * into a piped schema, and `objectId` is used as a `z.record` key, inside `queryList`, and in route
+ * params that the Fastify zod type provider converts to JSON Schema. A plain `ZodString` keeps all
+ * three working. Nothing legitimate sends upper case — every id a client holds came from this API,
+ * and Mongo's own hex is lower case.
+ */
+export const objectId = z.string().regex(/^[a-f\d]{24}$/, 'Invalid ObjectId');
 
 /**
  * ISO 8601 **instant**, for server-owned timestamps.

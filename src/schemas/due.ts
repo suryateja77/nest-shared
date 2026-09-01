@@ -66,6 +66,30 @@ export const createDueInputSchema = dueSchema
   .extend({ remindMe: z.boolean().default(false) });
 export type CreateDueInput = z.infer<typeof createDueInputSchema>;
 
+/**
+ * **A clearable field is `.nullable()`, not merely optional — this is the `Entry` bug, forestalled.**
+ *
+ * Under `.partial()` merge semantics *"the user cleared this"* and *"the client did not mention
+ * this"* arrive as the same request, so an optional field can never be emptied. `[OVL-08]` hit that
+ * for real: its editor submits every field, a cleared remark was indistinguishable from an unmentioned
+ * one, and the fix was to make editing a whole-body replacement (`PUT`).
+ *
+ * `[OVL-10]`'s editor is the same shape — a full-screen form with every field visible — so it would
+ * have hit it too, on `notes` and `personContactId`. Rather than a second replacement route, the clearable fields are
+ * nullable here: **absent means leave it, `null` means clear it, a value means set it.** That is the
+ * idiom `back` already uses two fields up in `dueBaseSchema`, for exactly this reason.
+ *
+ * Whoever builds the route must therefore `$unset` on an explicit `null` rather than `$set` it.
+ * Neither the route nor the screen exists yet — this is the contract getting the shape right before
+ * either does. `DECISIONS.md` records the audit that found it.
+ */
 /** `accountId` is omitted — a due does not move between accounts. */
-export const updateDueInputSchema = createDueInputSchema.omit({ accountId: true }).partial();
+export const updateDueInputSchema = createDueInputSchema
+  .omit({ accountId: true })
+  .partial()
+  .extend({
+    notes: z.string().max(200).nullable().optional(),
+    /** Cleared when a resolved contact is unlinked and the due keeps only its typed `personName`. */
+    personContactId: objectId.nullable().optional(),
+  });
 export type UpdateDueInput = z.infer<typeof updateDueInputSchema>;
