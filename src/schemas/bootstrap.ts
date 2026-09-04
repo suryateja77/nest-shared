@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { accountSummarySchema } from './account.js';
-import { bookSummarySchema, booksQuerySchema } from './book.js';
+import { bookSummarySchema, booksQuerySchema, sharedBookSummarySchema } from './book.js';
 import { objectId } from './common.js';
 import { profileSchema } from './profile.js';
 
@@ -88,5 +88,34 @@ export const bootstrapSchema = z.object({
    * and, per `GET /accounts/:accountId/books`, not designed for in the first place.
    */
   books: z.array(bookSummarySchema).nullable(),
+  /**
+   * `[GAP-2]`'s guest books — the SHARED WITH ME rows `[OVL-01]` composes beside the account's own,
+   * and the same value `GET /shared-with-me` returns.
+   *
+   * Folded in because it was the one request a launch still made beside this one, and it is a
+   * request nobody waits for: it is parallel, correctly excluded from `[SCR-05]`'s loading gate, and
+   * read only when the switcher opens. Gating it on the switcher opening was the other option and is
+   * worse — it trades a background request for a visible delay the first time someone opens
+   * `[OVL-01]`.
+   *
+   * **A plain array, deliberately not nullable like `books` above**, and the asymmetry is the part
+   * worth reading. `books` needs a third value for two structural reasons, and neither has a guest
+   * analogue:
+   *
+   * - `accountId` can be `null` — there may be no account to list books *for*. A guest row is scoped
+   *   by `kind: 'guest'` membership alone and needs no account relationship at all.
+   * - The books list sits behind a second, later `requireAccount(…, 'viewEntries')` read, so
+   *   `[GAP-8]`'s concurrent family edits can flip the answer between the two reads and the boot has
+   *   to be able to say *"ask the route"* rather than answer `[]`. This list has no capability gate
+   *   above it: the membership query **is** the authorization, and the per-book `resolveBookAccess`
+   *   that follows is pure and non-throwing — it drops a row it cannot resolve, it never declines
+   *   the list.
+   *
+   * So `[]` here is unambiguous and always means *"you are a guest in no books"*. `[OVL-01]` already
+   * renders that by omitting the section entirely — *"an empty section here would tell every
+   * ordinary member they are missing something"* — rather than as an empty state, so there is no
+   * `[LOG-07]` false-empty to guard against, which is the whole reason `books` is a third value.
+   */
+  sharedBooks: z.array(sharedBookSummarySchema),
 });
 export type Bootstrap = z.infer<typeof bootstrapSchema>;
